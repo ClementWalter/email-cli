@@ -121,3 +121,17 @@ def test_explain_disabled_api_points_at_console():
 def test_explain_other_error_returns_message():
     body = json.dumps({"error": {"message": "Requested entity was not found.", "errors": [{"reason": "notFound"}]}}).encode()
     assert ec.explain_http_error(FakeHttpError(body)) == "Requested entity was not found."
+
+
+def test_gmail_items_unescape_snippets(monkeypatch):
+    class Req:
+        def __init__(self, data): self.data = data
+        def execute(self): return self.data
+    class Msgs:
+        def list(self, **k): return Req({"messages": [{"id": "m1"}]})
+        def get(self, **k): return Req({"id": "m1", "internalDate": "1788000000000", "snippet": "J&#39;esp&egrave;re", "labelIds": ["INBOX"], "payload": {"headers": [{"name": "From", "value": "a@b"}, {"name": "Subject", "value": "S"}]}})
+    class Users:
+        def messages(self): return Msgs()
+    class Svc:
+        def users(self): return Users()
+    assert ec.gmail_items(Svc(), "default", "q", 5, None)[0]["snippet"] == "J'espère"
