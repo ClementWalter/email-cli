@@ -105,3 +105,19 @@ def test_account_config_unknown_fails_loud(monkeypatch, tmp_path):
     monkeypatch.setattr(ec, "CONFIG_PATH", tmp_path / "none.json")
     with pytest.raises(click.ClickException):
         ec.account_config("nope")
+
+
+class FakeHttpError(Exception):
+    def __init__(self, content: bytes):
+        self.content = content
+
+
+def test_explain_disabled_api_points_at_console():
+    body = json.dumps({"error": {"message": "Gmail API has not been used in project 1234 before or it is disabled.", "details": [{"reason": "SERVICE_DISABLED", "metadata": {"consumer": "projects/1234"}}], "errors": [{"reason": "accessNotConfigured"}]}}).encode()
+    text = ec.explain_http_error(FakeHttpError(body))
+    assert "project=1234" in text and "not enabled" in text
+
+
+def test_explain_other_error_returns_message():
+    body = json.dumps({"error": {"message": "Requested entity was not found.", "errors": [{"reason": "notFound"}]}}).encode()
+    assert ec.explain_http_error(FakeHttpError(body)) == "Requested entity was not found."
