@@ -326,7 +326,9 @@ const m = mb.messages.byId({int(raw_id)});
 const s = summary(m, {js(acc_name)}, {js(mailbox)});
 s.cc = m.ccRecipients().map(r => r.address()).join(", ");
 s.body = m.content();
-s.attachments = m.mailAttachments().map(a => ({{filename: a.name(), mimeType: a.mimeType(), size: a.fileSize()}}));
+// Mail.app exposes attachment name reliably; type and size vary by message, so each is best-effort.
+function prop(o, k) {{ try {{ return o[k](); }} catch (e) {{ return null; }} }}
+s.attachments = m.mailAttachments().map(a => ({{filename: prop(a, "name"), mimeType: prop(a, "mimeType"), size: prop(a, "fileSize")}}));
 JSON.stringify(s);"""
     m = jxa(script)
     out = item("mailapp", account, m["id"], m["ts"], m["from"], m["to"], m["subject"], "", m["unread"], m["mailbox"])
