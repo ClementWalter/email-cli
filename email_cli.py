@@ -237,7 +237,8 @@ def gmail_items(svc, account: str, query: str, limit: int, label: str | None) ->
     items = []
     for ref in ids[:limit]:
         msg = svc.users().messages().get(userId="me", id=ref["id"], format="metadata", metadataHeaders=["From", "To", "Subject", "Date"]).execute()
-        items.append(item("gmail", account, msg["id"], int(msg["internalDate"]) // 1000, header(msg, "From"), header(msg, "To"), header(msg, "Subject"), msg.get("snippet", ""), "UNREAD" in msg.get("labelIds", []), ",".join(msg.get("labelIds", []))))
+        # Gmail HTML-escapes snippets (&#39;); headers and bodies are not.
+        items.append(item("gmail", account, msg["id"], int(msg["internalDate"]) // 1000, header(msg, "From"), header(msg, "To"), header(msg, "Subject"), html.unescape(msg.get("snippet", "")), "UNREAD" in msg.get("labelIds", []), ",".join(msg.get("labelIds", []))))
     return items
 
 
@@ -263,7 +264,7 @@ def gmail_body(payload: dict) -> tuple[str, list[dict]]:
 def gmail_read(svc, account: str, msg_id: str) -> dict:
     msg = svc.users().messages().get(userId="me", id=msg_id, format="full").execute()
     body, attachments = gmail_body(msg["payload"])
-    out = item("gmail", account, msg["id"], int(msg["internalDate"]) // 1000, header(msg, "From"), header(msg, "To"), header(msg, "Subject"), msg.get("snippet", ""), "UNREAD" in msg.get("labelIds", []), ",".join(msg.get("labelIds", [])))
+    out = item("gmail", account, msg["id"], int(msg["internalDate"]) // 1000, header(msg, "From"), header(msg, "To"), header(msg, "Subject"), html.unescape(msg.get("snippet", "")), "UNREAD" in msg.get("labelIds", []), ",".join(msg.get("labelIds", [])))
     out.update(cc=header(msg, "Cc"), thread_id=msg.get("threadId"), body=body, attachments=attachments)
     return out
 
