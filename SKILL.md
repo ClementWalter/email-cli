@@ -35,7 +35,11 @@ Mail.app "Google"), `zama`, `kakarot`, `icloud`, `outlook`.
 | mailapp | macOS with Mail.app and its accounts           | every account Mail.app has                  | Mac only; `--in body` search is slow, bound it with `--since` and a mailbox |
 
 `auto` = gmail when `~/.config/email-cli/accounts/<name>/token.json` exists,
-else mailapp on macOS. The Gmail token reuses gdrive-cli's OAuth client
+else mailapp on macOS. **For a Google account, Gmail is the rule, not a
+preference**: it is about 30x faster on searches and sees messages Mail.app has
+not synced. Do not force `--backend mailapp` on a Google account; if one has no
+token yet, run `email auth login -a <name>` once instead. Mail.app is for the
+accounts Gmail cannot serve (iCloud, Outlook, IMAP). The Gmail token reuses gdrive-cli's OAuth client
 (`client_secret.json`) with the `gmail.modify` and `gmail.compose` scopes; it is
 a Document in the 1Password vault `Claudine` so a box restores it without a
 browser.
