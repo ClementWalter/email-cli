@@ -167,10 +167,48 @@ def save_token(creds, account: str) -> None:
     path.chmod(0o600)
 
 
-def gmail_service(account: str):
-    from googleapiclient.discovery import build
+class GmailApi:
+    """Thin wrapper turning Google's HTTP errors into one-line CLI errors."""
 
-    return build("gmail", "v1", credentials=gmail_credentials(account), cache_discovery=False)
+    def __init__(self, account: str):
+        from googleapiclient.discovery import build
+
+        self.account = account
+        self.svc = build("gmail", "v1", credentials=gmail_credentials(account), cache_discovery=False)
+
+    def users(self):
+        return self.svc.users()
+
+
+def gmail_service(account: str):
+    return GmailApi(account)
+
+
+def client_project_id(account: str | None) -> str:
+    """The Cloud project of the OAuth client, from its client_secret.json."""
+    path = client_secret_path(account or "default")
+    if not path:
+        return ""
+    data = json.loads(path.read_text())
+    return (data.get("installed") or data.get("web") or {}).get("project_id", "")
+
+
+def explain_http_error(exc, account: str | None = None) -> str:
+    """Google's 403 for a disabled API carries the console URL; surface it instead of a traceback."""
+    body = getattr(exc, "content", b"") or b""
+    try:
+        err = json.loads(body).get("error", {})
+    except (ValueError, AttributeError):
+        err = {}
+    reason = ",".join(d.get("reason", "") for d in err.get("details", []) if isinstance(d, dict)) or ",".join(e.get("reason", "") for e in err.get("errors", []))
+    if "accessNotConfigured" in reason or "has not been used in project" in str(err.get("message", "")):
+        project = ""
+        for d in err.get("details", []):
+            project = (d.get("metadata") or {}).get("consumer", "").replace("projects/", "") or project
+        project = project or client_project_id(account)
+        return (f"Gmail API is not enabled on the Google Cloud project of this OAuth client{' (' + project + ')' if project else ''}. "
+                f"Enable it once: https://console.developers.google.com/apis/api/gmail.googleapis.com/overview?project={project}")
+    return err.get("message") or str(exc)
 
 
 def gmail_labels(svc) -> list[dict]:
@@ -382,6 +420,23 @@ json_option = click.option("--json", "as_json", is_flag=True)
 def cli(verbose: bool) -> None:
     """Read and send email through Gmail's API or macOS Mail.app, same commands everywhere."""
     logging.basicConfig(level=logging.INFO if verbose else logging.WARNING, format="%(name)s %(levelname)s %(message)s", stream=sys.stderr)
+    logging.getLogger("googleapiclient.http").setLevel(logging.ERROR)
+
+
+def main() -> None:
+    try:
+        cli.main(standalone_mode=False)
+    except click.ClickException as exc:
+        exc.show()
+        sys.exit(exc.exit_code)
+    except click.Abort:
+        sys.exit(130)
+    except Exception as exc:  # Google API errors reach here as HttpError
+        if type(exc).__name__ == "HttpError":
+            account = next((sys.argv[i + 1] for i, a in enumerate(sys.argv) if a in ("-a", "--account") and i + 1 < len(sys.argv)), None)
+            click.echo(f"Error: {explain_http_error(exc, account)}", err=True)
+            sys.exit(1)
+        raise
 
 
 @cli.command()
@@ -537,4 +592,4 @@ def send(to: str, subject: str, body: str | None, cc: str | None, attach: tuple[
 
 
 if __name__ == "__main__":
-    cli()
+    main()
