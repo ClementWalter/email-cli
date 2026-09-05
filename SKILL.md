@@ -1,6 +1,6 @@
 ---
 name: email-cli
-description: Read, search and send the user's email from the terminal via the bundled `email` command, the same commands on every machine. Two backends behind one CLI - the Gmail API with a per-account OAuth token (works from any machine, fast search with Gmail query syntax) and macOS Mail.app over JavaScript for Automation (covers iCloud/Outlook/IMAP accounts, macOS only). Accounts are names (`default` = personal Google, `zama`, `kakarot`, `icloud`, `outlook`); `--backend auto` picks Gmail when a token exists, else Mail.app. Commands - `email accounts`, `email mailboxes`, `email list <mailbox>`, `email search "<query>"`, `email read <id>`, `email attachments <id> --out DIR`, `email send <to> --subject ... --yes`. Every read supports --json. Use when the user wants to read, find, or answer email, save an attachment, or a heartbeat needs a mailbox as data.
+description: Read, search and send the user's email from the terminal via the bundled `email` command, the same commands on every machine. Two backends behind one CLI - the Gmail API with a per-account OAuth token (works from any machine, fast search with Gmail query syntax) and macOS Mail.app over JavaScript for Automation (covers iCloud/Outlook/IMAP accounts, macOS only). Accounts are names (`default` = personal Google, `zama`, `kakarot`, `icloud`, `outlook`); `--backend auto` picks Gmail when a token exists, else Mail.app. Commands - `email accounts`, `email mailboxes`, `email list <mailbox>`, `email search "<query>"`, `email read <id>`, `email attachments <id> --out DIR`, `email send <to> --subject ... --yes`, `email reply <id> --yes` (threaded reply). `send`/`reply` take `--file <draft.md>` instead of `--body` to reflow a hard-wrapped Markdown draft into normal email paragraphs. Every read supports --json. Use when the user wants to read, find, or answer email, save an attachment, or a heartbeat needs a mailbox as data.
 ---
 
 # email-cli
@@ -21,7 +21,13 @@ email read 18f3a2b9c0d1e2f3 -a default               # Gmail id
 email read "Google:Immo/Poncelet:1234" -a default     # Mail.app id, backend inferred from the shape
 email attachments <id> -a default --out ~/Downloads/devis
 email send loic.thomas@lescallier.fr --subject "..." --body "..." -a default --yes
+email send loic.thomas@lescallier.fr --subject "..." --file draft.md -a default --yes    # reflows a hard-wrapped Markdown draft into normal paragraphs before sending
+email reply 18f3a2b9c0d1e2f3 --file draft.md -a default --yes        # threaded reply: reuses To/Cc/Subject, sets In-Reply-To/References and Gmail threadId from the original
 ```
+
+`--file` is for the case that bit us once: a Markdown draft wrapped at ~78 chars for readability, sent verbatim, lands with line breaks in the middle of sentences. `--file` joins each paragraph back onto one line (headings/list items/blockquotes keep their own line) before sending; `--body`/stdin are sent as-is, so compose those already unwrapped.
+
+`reply` only works from the message being answered, not from a bare `--body`/`--to`: on Gmail it fetches the original's Message-ID/References/threadId and sets them on the outgoing message; on Mail.app it hands off to Mail's own `reply` command, so `--to`/`--subject` are not accepted for that backend (Mail.app already sets them from the original).
 
 ## Accounts and backends
 
