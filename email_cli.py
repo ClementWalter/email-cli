@@ -134,6 +134,51 @@ def html_to_text(markup: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", html.unescape(text)).strip()
 
 
+STRUCTURAL_LINE = re.compile(r"^\s*(#{1,6}\s|[-*+]\s|\d+[.)]\s|>)")
+
+
+def reflow_markdown(text: str) -> str:
+    """Join a Markdown draft's hard-wrapped paragraphs into the single-line-per-paragraph
+    shape a normal email body needs. Blank lines still separate paragraphs; a heading, list
+    item or blockquote marker starts a new paragraph even without a blank line before it
+    (so consecutive list items don't get glued together), but its own wrapped continuation
+    lines still join onto it, so a list item spanning several source lines becomes one."""
+    paragraphs: list[str] = []
+    current: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            if current:
+                paragraphs.append(" ".join(current))
+                current = []
+            paragraphs.append("")
+            continue
+        if STRUCTURAL_LINE.match(line) and current:
+            paragraphs.append(" ".join(current))
+            current = []
+        current.append(line)
+    if current:
+        paragraphs.append(" ".join(current))
+    out: list[str] = []
+    for p in paragraphs:
+        if p == "" and (not out or out[-1] == ""):
+            continue
+        out.append(p)
+    while out and out[0] == "":
+        out.pop(0)
+    while out and out[-1] == "":
+        out.pop()
+    return "\n".join(out)
+
+
+def reply_subject(subject: str) -> str:
+    return subject if subject.strip().lower().startswith("re:") else f"Re: {subject}"
+
+
+def reply_references(orig_references: str, orig_message_id: str) -> str:
+    return f"{orig_references} {orig_message_id}".strip() if orig_references else orig_message_id
+
+
 # --- gmail backend -------------------------------------------------------------
 
 def gmail_credentials(account: str, interactive: bool = False, login_hint: str | None = None):
@@ -265,7 +310,7 @@ def gmail_read(svc, account: str, msg_id: str) -> dict:
     msg = svc.users().messages().get(userId="me", id=msg_id, format="full").execute()
     body, attachments = gmail_body(msg["payload"])
     out = item("gmail", account, msg["id"], int(msg["internalDate"]) // 1000, header(msg, "From"), header(msg, "To"), header(msg, "Subject"), html.unescape(msg.get("snippet", "")), "UNREAD" in msg.get("labelIds", []), ",".join(msg.get("labelIds", [])))
-    out.update(cc=header(msg, "Cc"), thread_id=msg.get("threadId"), body=body, attachments=attachments)
+    out.update(cc=header(msg, "Cc"), thread_id=msg.get("threadId"), body=body, attachments=attachments, message_id=header(msg, "Message-ID"), references=header(msg, "References"))
     return out
 
 
@@ -299,9 +344,12 @@ def build_message(sender: str, to: str, subject: str, body: str, cc: str | None,
     return msg
 
 
-def gmail_send(svc, msg: EmailMessage) -> str:
+def gmail_send(svc, msg: EmailMessage, thread_id: str | None = None) -> str:
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-    return svc.users().messages().send(userId="me", body={"raw": raw}).execute()["id"]
+    body = {"raw": raw}
+    if thread_id:
+        body["threadId"] = thread_id
+    return svc.users().messages().send(userId="me", body=body).execute()["id"]
 
 
 # --- mailapp backend (JavaScript for Automation) -------------------------------
@@ -393,6 +441,23 @@ def mailapp_send(acc_name: str, sender: str, to: str, subject: str, body: str, c
     script = f"""
 const msg = Mail.OutgoingMessage({{subject: {js(subject)}, content: {js(body)}, sender: {js(sender)}, visible: false}});
 Mail.outgoingMessages.push(msg); {recipients}{ccs}{files}
+msg.send(); JSON.stringify({{sent: true}});"""
+    jxa(script)
+
+
+def mailapp_reply(acc_name: str, mailbox: str, raw_id: str, body: str, cc: str | None, attachments: list[pathlib.Path]) -> None:
+    """Mail.app's own `reply` command builds the outgoing message already addressed and
+    threaded (In-Reply-To/References, same subject) from the original; we only set the
+    content and let it send. Not exercised on this (Linux) box - verify on a Mac before
+    trusting it blindly, same as the rest of the mailapp backend."""
+    ccs = "".join(f"msg.ccRecipients.push(Mail.CcRecipient({{address: {js(a.strip())}}}));" for a in (cc or "").split(",") if a.strip())
+    files = "".join(f"msg.attachments.push(Mail.Attachment({{fileName: Path({js(str(p))})}}));" for p in attachments)
+    script = f"""
+const acc = account({js(acc_name)}); const mb = findMailbox(acc, {js(mailbox)});
+const m = mb.messages.byId({int(raw_id)});
+const msg = m.reply({{openingWindow: false}});
+msg.content = {js(body)};
+{ccs}{files}
 msg.send(); JSON.stringify({{sent: true}});"""
     jxa(script)
 
@@ -567,20 +632,32 @@ def attachments(msg_id: str, out: str, account: str | None, backend: str) -> Non
         click.echo(str(p))
 
 
+def resolve_body(body: str | None, file_: pathlib.Path | None) -> str:
+    if body is not None and file_ is not None:
+        raise click.ClickException("--body and --file are mutually exclusive")
+    if file_ is not None:
+        return reflow_markdown(file_.read_text())
+    return body if body is not None else sys.stdin.read()
+
+
+file_option = click.option("--file", "file_", default=None, type=click.Path(exists=True, dir_okay=False, path_type=pathlib.Path), help="read the body from a Markdown draft file and reflow its hard-wrapped paragraphs into email-normal single lines (mutually exclusive with --body)")
+
+
 @cli.command()
 @click.argument("to")
 @click.option("--subject", required=True)
 @click.option("--body", default=None, help="text body; reads stdin when omitted")
+@file_option
 @click.option("--cc", default=None)
 @click.option("--attach", multiple=True, type=click.Path(exists=True, dir_okay=False, path_type=pathlib.Path))
 @click.option("--yes", is_flag=True, help="actually send; without it the message is only shown")
 @account_option
 @backend_option
-def send(to: str, subject: str, body: str | None, cc: str | None, attach: tuple[pathlib.Path, ...], yes: bool, account: str | None, backend: str) -> None:
+def send(to: str, subject: str, body: str | None, file_: pathlib.Path | None, cc: str | None, attach: tuple[pathlib.Path, ...], yes: bool, account: str | None, backend: str) -> None:
     """Send a plain-text email from an account. Dry run unless --yes."""
     name, acc = account_config(account)
     backend = resolve_backend(backend, name, acc)
-    text = body if body is not None else sys.stdin.read()
+    text = resolve_body(body, file_)
     sender = acc.get("address") or ""
     click.echo(f"[{'SEND' if yes else 'dry run'}] via {backend} as {sender}\n  to: {to}\n  cc: {cc or '-'}\n  subject: {subject}\n  attachments: {', '.join(p.name for p in attach) or '-'}\n\n{text}", err=not yes)
     if not yes:
@@ -589,6 +666,51 @@ def send(to: str, subject: str, body: str | None, cc: str | None, attach: tuple[
         click.echo(f"sent: {gmail_send(gmail_service(name), build_message(sender, to, subject, text, cc, list(attach)))}")
     else:
         mailapp_send(acc["mailapp"], sender, to, subject, text, cc, list(attach))
+        click.echo("sent via Mail.app")
+
+
+@cli.command()
+@click.argument("msg_id")
+@click.option("--body", default=None, help="text body; reads stdin when omitted")
+@file_option
+@click.option("--to", default=None, help="override recipient (default: original sender)")
+@click.option("--cc", default=None, help="override Cc (default: original Cc)")
+@click.option("--subject", default=None, help="override subject (default: original subject, 'Re: ' prefixed once)")
+@click.option("--attach", multiple=True, type=click.Path(exists=True, dir_okay=False, path_type=pathlib.Path))
+@click.option("--yes", is_flag=True, help="actually send; without it the message is only shown")
+@account_option
+@backend_option
+def reply(msg_id: str, body: str | None, file_: pathlib.Path | None, to: str | None, cc: str | None, subject: str | None, attach: tuple[pathlib.Path, ...], yes: bool, account: str | None, backend: str) -> None:
+    """Reply to msg_id in its existing thread (Gmail: In-Reply-To/References + threadId;
+    Mail.app: its own reply). Dry run unless --yes."""
+    name, acc = account_config(account)
+    backend = "mailapp" if msg_id.count(":") >= 2 else resolve_backend(backend, name, acc)
+    text = resolve_body(body, file_)
+    sender = acc.get("address") or ""
+    if backend == "gmail":
+        svc = gmail_service(name)
+        orig = gmail_read(svc, name, msg_id)
+        subj = subject or reply_subject(orig["subject"])
+        rcpt = to or orig["from"]
+        rcc = cc if cc is not None else (orig.get("cc") or None)
+        click.echo(f"[{'SEND' if yes else 'dry run'}] via gmail as {sender}\n  to: {rcpt}\n  cc: {rcc or '-'}\n  subject: {subj}\n  thread: {orig['thread_id']}\n\n{text}", err=not yes)
+        if not yes:
+            return
+        msg = build_message(sender, rcpt, subj, text, rcc, list(attach))
+        if orig.get("message_id"):
+            msg["In-Reply-To"] = orig["message_id"]
+            msg["References"] = reply_references(orig.get("references") or "", orig["message_id"])
+        click.echo(f"sent: {gmail_send(svc, msg, thread_id=orig.get('thread_id'))}")
+    else:
+        if to or subject:
+            raise click.ClickException("--to/--subject are not supported for the mailapp backend: Mail.app's own `reply` command sets the recipient and subject from the original message")
+        orig = mailapp_read(name, msg_id)
+        rcc = cc if cc is not None else (orig.get("cc") or None)
+        click.echo(f"[{'SEND' if yes else 'dry run'}] via mailapp as {sender}\n  to: {orig['from']}\n  cc: {rcc or '-'}\n  subject: {reply_subject(orig['subject'])}\n\n{text}", err=not yes)
+        if not yes:
+            return
+        acc_name, mailbox, raw_id = msg_id.split(":", 2)
+        mailapp_reply(acc_name, mailbox, raw_id, text, rcc, list(attach))
         click.echo("sent via Mail.app")
 
 

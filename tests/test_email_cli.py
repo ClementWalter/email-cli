@@ -123,6 +123,99 @@ def test_explain_other_error_returns_message():
     assert ec.explain_http_error(FakeHttpError(body)) == "Requested entity was not found."
 
 
+def test_reflow_markdown_joins_hard_wrapped_paragraph():
+    text = "Bonjour Madame,\n\nJe me permets de vous relancer au sujet\nde notre dossier crèche, resté sans\nréponse depuis deux mois.\n\nCordialement,\nClément"
+    assert ec.reflow_markdown(text) == (
+        "Bonjour Madame,\n\n"
+        "Je me permets de vous relancer au sujet de notre dossier crèche, resté sans réponse depuis deux mois.\n\n"
+        "Cordialement, Clément"
+    )
+
+
+def test_reflow_markdown_keeps_list_items_and_blockquotes_on_their_own_line():
+    text = "Contexte:\n- premier point\n- second point\n\n> une citation\n> sur deux lignes"
+    assert ec.reflow_markdown(text) == "Contexte:\n- premier point\n- second point\n\n> une citation\n> sur deux lignes"
+
+
+def test_reflow_markdown_joins_wrapped_numbered_list_item_onto_one_line():
+    text = (
+        "1. La Chambre régionale des comptes, dans son rapport de 2017\n"
+        "   sur l'attribution des places en crèche par la Ville de Paris,\n"
+        "   recommandait déjà une analyse statistique annuelle.\n"
+        "2. Le 14e arrondissement publie chaque année un bilan\n"
+        "   des attributions."
+    )
+    assert ec.reflow_markdown(text) == (
+        "1. La Chambre régionale des comptes, dans son rapport de 2017 sur l'attribution des places en crèche par la Ville de Paris, recommandait déjà une analyse statistique annuelle.\n"
+        "2. Le 14e arrondissement publie chaque année un bilan des attributions."
+    )
+
+
+def test_reflow_markdown_collapses_repeated_blank_lines_and_trims_ends():
+    assert ec.reflow_markdown("\n\nHello\nworld\n\n\n\nBye\n\n") == "Hello world\n\nBye"
+
+
+def test_reply_subject_prefixes_once():
+    assert ec.reply_subject("Demande d'inscription") == "Re: Demande d'inscription"
+    assert ec.reply_subject("Re: Demande d'inscription") == "Re: Demande d'inscription"
+    assert ec.reply_subject("RE: Demande d'inscription") == "RE: Demande d'inscription"
+
+
+def test_reply_references_appends_to_existing_chain():
+    assert ec.reply_references("<a@x> <b@x>", "<c@x>") == "<a@x> <b@x> <c@x>"
+    assert ec.reply_references("", "<c@x>") == "<c@x>"
+
+
+def test_gmail_send_sets_thread_id_when_given():
+    seen = {}
+    class Req:
+        def execute(self): return {"id": "sent1"}
+    class Msgs:
+        def send(self, userId, body):
+            seen["body"] = body
+            return Req()
+    class Users:
+        def messages(self): return Msgs()
+    class Svc:
+        def users(self): return Users()
+    msg = ec.build_message("me@x", "you@y", "Re: S", "hi", None, [])
+    assert ec.gmail_send(Svc(), msg, thread_id="t1") == "sent1"
+    assert seen["body"]["threadId"] == "t1"
+
+
+def test_gmail_send_omits_thread_id_when_absent():
+    class Req:
+        def execute(self): return {"id": "sent1"}
+    class Msgs:
+        def send(self, userId, body):
+            assert "threadId" not in body
+            return Req()
+    class Users:
+        def messages(self): return Msgs()
+    class Svc:
+        def users(self): return Users()
+    msg = ec.build_message("me@x", "you@y", "S", "hi", None, [])
+    ec.gmail_send(Svc(), msg)
+
+
+def test_resolve_body_rejects_body_and_file_together(tmp_path):
+    p = tmp_path / "draft.md"
+    p.write_text("x")
+    with pytest.raises(click.ClickException):
+        ec.resolve_body("inline", p)
+
+
+def test_resolve_body_reflows_file(tmp_path):
+    p = tmp_path / "draft.md"
+    p.write_text("line one\nline two")
+    assert ec.resolve_body(None, p) == "line one line two"
+
+
+def test_resolve_body_reads_stdin_when_neither_given(monkeypatch):
+    monkeypatch.setattr(ec.sys, "stdin", __import__("io").StringIO("piped body"))
+    assert ec.resolve_body(None, None) == "piped body"
+
+
 def test_gmail_items_unescape_snippets(monkeypatch):
     class Req:
         def __init__(self, data): self.data = data
