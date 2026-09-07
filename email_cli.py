@@ -46,6 +46,10 @@ from email.utils import parsedate_to_datetime
 
 import click
 
+# Entry points may be symlinked into a shared bin directory.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import email_auth_store as auth_store
+
 CONFIG_DIR = pathlib.Path.home() / ".config" / "email-cli"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 GDRIVE_ACCOUNTS = pathlib.Path.home() / ".config" / "gdrive-cli" / "accounts"
@@ -86,11 +90,16 @@ def account_config(name: str | None) -> tuple[str, dict]:
 
 
 def token_path(account: str) -> pathlib.Path:
+    if not account or account in (".", "..") or "/" in account or "\\" in account:
+        raise click.ClickException("Invalid account name")
     return CONFIG_DIR / "accounts" / account / "token.json"
 
 
 def client_secret_path(account: str) -> pathlib.Path | None:
     """Reuse gdrive-cli's OAuth client: same Google Cloud project, per-account or shared file."""
+    auth_store.restore(GDRIVE_ACCOUNTS / account / "client_secret.json", "gdrive-client", account)
+    if account != "default":
+        auth_store.restore(GDRIVE_ACCOUNTS / "default" / "client_secret.json", "gdrive-client", "default")
     for candidate in (
         CONFIG_DIR / "accounts" / account / "client_secret.json",
         CONFIG_DIR / "client_secret.json",
@@ -104,6 +113,8 @@ def client_secret_path(account: str) -> pathlib.Path | None:
 
 def resolve_backend(option: str, account: str, acc: dict, macos: bool = IS_MACOS) -> str:
     if option == "auto":
+        if not token_path(account).exists():
+            auth_store.restore(token_path(account), "email", account)
         if token_path(account).exists():
             return "gmail"
         if macos and acc.get("mailapp"):
@@ -186,6 +197,7 @@ def gmail_credentials(account: str, interactive: bool = False, login_hint: str |
     from google.oauth2.credentials import Credentials
 
     path = token_path(account)
+    auth_store.restore(path, "email", account)
     creds = Credentials.from_authorized_user_file(str(path), GMAIL_SCOPES) if path.exists() else None
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
@@ -193,7 +205,7 @@ def gmail_credentials(account: str, interactive: bool = False, login_hint: str |
     if creds and creds.valid:
         return creds
     if not interactive:
-        raise click.ClickException(f"account {account!r} has no valid Gmail token; run `email auth login --account {account}` in a browser-capable terminal")
+        raise click.ClickException(f"account {account!r} has no valid Gmail token; connect Email in Brain or use email auth login --account {account}")
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     secret = client_secret_path(account)
@@ -207,9 +219,7 @@ def gmail_credentials(account: str, interactive: bool = False, login_hint: str |
 
 def save_token(creds, account: str) -> None:
     path = token_path(account)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(creds.to_json())
-    path.chmod(0o600)
+    auth_store.save(path, json.loads(creds.to_json()), "email", account)
 
 
 class GmailApi:
@@ -533,6 +543,32 @@ def auth_login(account: str | None) -> None:
     name, acc = account_config(account)
     creds = gmail_credentials(name, interactive=True, login_hint=acc.get("address") or None)
     click.echo(f"token saved for {name} ({acc.get('address')}) → {token_path(name)}")
+
+
+@auth.command("status")
+@account_option
+@json_option
+def auth_status(account: str | None, as_json: bool) -> None:
+    """Report credential source and pending vault synchronization without secrets."""
+    name, _ = account_config(account)
+    result = auth_store.status(token_path(name), "email", name)
+    click.echo(json.dumps(result) if as_json else f"{name}: {result['source']}")
+
+
+@auth.command("sync")
+@account_option
+@json_option
+def auth_sync(account: str | None, as_json: bool) -> None:
+    """Import or synchronize the selected Gmail account with the vault."""
+    name, _ = account_config(account)
+    result = auth_store.sync(token_path(name), "email", name)
+    click.echo(json.dumps(result) if as_json else f"{name}: {result['source']}")
+    if result["pending"] or not result["configured"]:
+        raise click.exceptions.Exit(3)
+
+
+cli.add_command(auth_status, "auth-status")
+cli.add_command(auth_sync, "auth-sync")
 
 
 @cli.command()
