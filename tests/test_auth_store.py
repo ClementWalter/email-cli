@@ -67,6 +67,7 @@ def test_sync_imports_legacy_working_copy(tmp_path, monkeypatch):
 def test_auth_status_cli_reports_legacy_copy(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(cli, "CONFIG_PATH", tmp_path / "config.json")
+    (tmp_path / "config.json").write_text(json.dumps({"default_account": "default", "accounts": {"default": {"address": "test@example.test"}}}))
     path = cli.token_path("default")
     store.write_private(path, {"token": "sensitive"})
     result = CliRunner().invoke(cli.cli, ["auth-status", "--account", "default", "--json"])
@@ -76,6 +77,7 @@ def test_auth_status_cli_reports_legacy_copy(tmp_path, monkeypatch):
 def test_auth_sync_cli_signals_pending(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(cli, "CONFIG_PATH", tmp_path / "config.json")
+    (tmp_path / "config.json").write_text(json.dumps({"default_account": "default", "accounts": {"default": {"address": "test@example.test"}}}))
     result = CliRunner().invoke(cli.cli, ["auth-sync", "--account", "default", "--json"])
     assert result.exit_code == 3
 
@@ -132,8 +134,15 @@ def test_cli_process_status_without_broker(tmp_path):
     import subprocess
     import sys
     script = Path(cli.__file__).resolve()
+    config = tmp_path / ".config/email-cli/config.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({"default_account": "default", "accounts": {"default": {"address": "test@example.test"}}}))
     result = subprocess.run([sys.executable, "-O", str(script), "auth-status", "--json"],
                             env={**os.environ, "HOME": str(tmp_path), "PATH": ""},
                             capture_output=True, text=True, timeout=20)
     assert (result.returncode, json.loads(result.stdout)) == (0, {"connector": "email", "account": "default", "source": "unavailable", "configured": False, "pending": False, "last_sync": None})
 
+
+def test_fresh_install_has_no_preconfigured_personal_accounts(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "CONFIG_PATH", tmp_path / "config.json")
+    assert cli.load_config()["accounts"] == {}
