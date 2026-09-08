@@ -63,14 +63,8 @@ log = logging.getLogger("email")
 # --- config ------------------------------------------------------------------
 
 DEFAULT_CONFIG = {
-    "default_account": "default",
-    "accounts": {
-        "default": {"address": "clement0walter@gmail.com", "mailapp": "Google"},
-        "zama": {"address": "clement.walter@zama.ai", "mailapp": "Zama"},
-        "kakarot": {"address": "clement@kakarot.org", "mailapp": "Kakarot"},
-        "icloud": {"address": "", "mailapp": "iCloud"},
-        "outlook": {"address": "clemlaflemme@hotmail.com", "mailapp": "Outlook"},
-    },
+    "default_account": "",
+    "accounts": {},
 }
 
 
@@ -749,6 +743,13 @@ def reply(msg_id: str, body: str | None, file_: pathlib.Path | None, to: str | N
         mailapp_reply(acc_name, mailbox, raw_id, text, rcc, list(attach))
         click.echo("sent via Mail.app")
 
+
+# Provider commands share the same execution policy as the app and MCP.
+from pathlib import Path as _PolicyPath
+import sys as _policy_sys
+_policy_sys.path.insert(0, str(_PolicyPath(__file__).resolve().parent))
+from onebrain_policy import install as _install_onebrain_policy
+_install_onebrain_policy(cli, 'email')
 
 if __name__ == "__main__":
     main()
