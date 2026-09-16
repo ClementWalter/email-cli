@@ -187,6 +187,7 @@ def reply_references(orig_references: str, orig_message_id: str) -> str:
 # --- gmail backend -------------------------------------------------------------
 
 def gmail_credentials(account: str, interactive: bool = False, login_hint: str | None = None):
+    from google.auth.exceptions import RefreshError
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
 
@@ -194,8 +195,14 @@ def gmail_credentials(account: str, interactive: bool = False, login_hint: str |
     auth_store.restore(path, "email", account)
     creds = Credentials.from_authorized_user_file(str(path), GMAIL_SCOPES) if path.exists() else None
     if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        save_token(creds, account)
+        try:
+            creds.refresh(Request())
+            save_token(creds, account)
+        except RefreshError as exc:
+            # A revoked or expired grant cannot be refreshed again: drop the dead token so
+            # the interactive flow re-consents instead of raising Google's traceback.
+            log.warning("stored Gmail grant for %s is dead (%s); consent again", account, exc)
+            creds = None
     if creds and creds.valid:
         return creds
     if not interactive:

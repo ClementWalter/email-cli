@@ -1,6 +1,7 @@
 """Credential broker integration without live vault or Google access."""
 
 import json
+import sys
 from types import SimpleNamespace
 
 from click.testing import CliRunner
@@ -146,3 +147,43 @@ def test_cli_process_status_without_broker(tmp_path):
 def test_fresh_install_has_no_preconfigured_personal_accounts(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "CONFIG_PATH", tmp_path / "config.json")
     assert cli.load_config()["accounts"] == {}
+
+
+@pytest.fixture
+def revoked_token(tmp_path, monkeypatch):
+    """An account whose stored grant Google refuses to refresh."""
+    from google.auth.exceptions import RefreshError
+    from google.oauth2.credentials import Credentials
+    store.write_private(tmp_path / "accounts" / "work" / "token.json", {"token": "revoked"})
+    monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
+    class Revoked:
+        expired = True
+        refresh_token = "refresh"
+        valid = True
+        def refresh(self, request):
+            raise RefreshError("invalid_grant: Token has been expired or revoked.")
+    monkeypatch.setattr(Credentials, "from_authorized_user_file", lambda *args: Revoked())
+    return tmp_path
+
+
+def test_revoked_grant_reports_relogin_instead_of_traceback(revoked_token):
+    with pytest.raises(cli.click.ClickException, match="email auth login"):
+        cli.gmail_credentials("work")
+
+
+def test_revoked_grant_triggers_consent_when_interactive(revoked_token, monkeypatch):
+    consented = []
+    class Fresh:
+        def to_json(self):
+            return json.dumps({"token": "fresh"})
+    class Flow:
+        @staticmethod
+        def from_client_secrets_file(secret, scopes):
+            return Flow()
+        def run_local_server(self, **kwargs):
+            consented.append(kwargs)
+            return Fresh()
+    monkeypatch.setattr(cli, "client_secret_path", lambda account: revoked_token / "client_secret.json")
+    monkeypatch.setitem(sys.modules, "google_auth_oauthlib.flow", SimpleNamespace(InstalledAppFlow=Flow))
+    cli.gmail_credentials("work", interactive=True, login_hint="work@example.test")
+    assert consented == [{"port": 0, "login_hint": "work@example.test"}]
