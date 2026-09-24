@@ -228,3 +228,45 @@ def test_gmail_items_unescape_snippets(monkeypatch):
     class Svc:
         def users(self): return Users()
     assert ec.gmail_items(Svc(), "default", "q", 5, None)[0]["snippet"] == "J'espère"
+
+
+class _DraftSvc:
+    """Records the body passed to drafts().create."""
+
+    def __init__(self):
+        self.body = None
+
+    def users(self):
+        svc = self
+        class Req:
+            def execute(self): return {"id": "draft1"}
+        class Drafts:
+            def create(self, userId, body):
+                svc.body = body
+                return Req()
+        class Users:
+            def drafts(self): return Drafts()
+        return Users()
+
+
+def test_gmail_draft_returns_draft_id():
+    msg = ec.build_message("me@x", "you@y", "Re: S", "hi", None, [])
+    assert ec.gmail_draft(_DraftSvc(), msg, thread_id="t1") == "draft1"
+
+
+def test_gmail_draft_attaches_thread_id():
+    svc = _DraftSvc()
+    ec.gmail_draft(svc, ec.build_message("me@x", "you@y", "Re: S", "hi", None, []), thread_id="t1")
+    assert svc.body["message"]["threadId"] == "t1"
+
+
+def test_gmail_draft_omits_thread_id_when_absent():
+    svc = _DraftSvc()
+    ec.gmail_draft(svc, ec.build_message("me@x", "you@y", "S", "hi", None, []))
+    assert "threadId" not in svc.body["message"]
+
+
+def test_reply_rejects_draft_with_yes():
+    from click.testing import CliRunner
+    result = CliRunner().invoke(ec.reply, ["abc", "--body", "x", "--draft", "--yes", "--backend", "gmail"])
+    assert "exclusive" in result.output

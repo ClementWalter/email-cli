@@ -363,6 +363,14 @@ def gmail_send(svc, msg: EmailMessage, thread_id: str | None = None) -> str:
     return svc.users().messages().send(userId="me", body=body).execute()["id"]
 
 
+def gmail_draft(svc, msg: EmailMessage, thread_id: str | None = None) -> str:
+    """Store msg as a Gmail draft, attached to thread_id so it opens as a reply in that thread."""
+    message = {"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode()}
+    if thread_id:
+        message["threadId"] = thread_id
+    return svc.users().drafts().create(userId="me", body={"message": message}).execute()["id"]
+
+
 # --- mailapp backend (JavaScript for Automation) -------------------------------
 
 JXA_PRELUDE = r"""
@@ -715,29 +723,38 @@ def send(to: str, subject: str, body: str | None, file_: pathlib.Path | None, cc
 @click.option("--subject", default=None, help="override subject (default: original subject, 'Re: ' prefixed once)")
 @click.option("--attach", multiple=True, type=click.Path(exists=True, dir_okay=False, path_type=pathlib.Path))
 @click.option("--yes", is_flag=True, help="actually send; without it the message is only shown")
+@click.option("--draft", is_flag=True, help="Gmail only: save the reply as a draft in the thread instead of sending it")
 @account_option
 @backend_option
-def reply(msg_id: str, body: str | None, file_: pathlib.Path | None, to: str | None, cc: str | None, subject: str | None, attach: tuple[pathlib.Path, ...], yes: bool, account: str | None, backend: str) -> None:
+def reply(msg_id: str, body: str | None, file_: pathlib.Path | None, to: str | None, cc: str | None, subject: str | None, attach: tuple[pathlib.Path, ...], yes: bool, draft: bool, account: str | None, backend: str) -> None:
     """Reply to msg_id in its existing thread (Gmail: In-Reply-To/References + threadId;
-    Mail.app: its own reply). Dry run unless --yes."""
+    Mail.app: its own reply). Dry run unless --yes or --draft."""
     name, acc = account_config(account)
     backend = "mailapp" if msg_id.count(":") >= 2 else resolve_backend(backend, name, acc)
     text = resolve_body(body, file_)
     sender = acc.get("address") or ""
+    if draft and backend != "gmail":
+        raise click.ClickException("--draft needs the gmail backend: Mail.app exposes no scriptable reply draft")
+    if draft and yes:
+        raise click.ClickException("--draft and --yes are exclusive: a draft is never sent")
     if backend == "gmail":
         svc = gmail_service(name)
         orig = gmail_read(svc, name, msg_id)
         subj = subject or reply_subject(orig["subject"])
         rcpt = to or orig["from"]
         rcc = cc if cc is not None else (orig.get("cc") or None)
-        click.echo(f"[{'SEND' if yes else 'dry run'}] via gmail as {sender}\n  to: {rcpt}\n  cc: {rcc or '-'}\n  subject: {subj}\n  thread: {orig['thread_id']}\n\n{text}", err=not yes)
-        if not yes:
+        mode = "DRAFT" if draft else "SEND" if yes else "dry run"
+        click.echo(f"[{mode}] via gmail as {sender}\n  to: {rcpt}\n  cc: {rcc or '-'}\n  subject: {subj}\n  thread: {orig['thread_id']}\n  attach: {', '.join(a.name for a in attach) or '-'}\n\n{text}", err=not (yes or draft))
+        if not (yes or draft):
             return
         msg = build_message(sender, rcpt, subj, text, rcc, list(attach))
         if orig.get("message_id"):
             msg["In-Reply-To"] = orig["message_id"]
             msg["References"] = reply_references(orig.get("references") or "", orig["message_id"])
-        click.echo(f"sent: {gmail_send(svc, msg, thread_id=orig.get('thread_id'))}")
+        if draft:
+            click.echo(f"draft: {gmail_draft(svc, msg, thread_id=orig.get('thread_id'))}")
+        else:
+            click.echo(f"sent: {gmail_send(svc, msg, thread_id=orig.get('thread_id'))}")
     else:
         if to or subject:
             raise click.ClickException("--to/--subject are not supported for the mailapp backend: Mail.app's own `reply` command sets the recipient and subject from the original message")
