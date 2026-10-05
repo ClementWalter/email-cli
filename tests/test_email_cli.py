@@ -381,8 +381,12 @@ def test_auto_uses_gmail_when_it_answers(gmail_account):
 
 
 class HttpError(Exception):
-    def __init__(self, status):
+    def __init__(self, status, content=b""):
         self.resp = type("Resp", (), {"status": status})()
+        self.content = content
+
+
+API_DISABLED = json.dumps({"error": {"message": "Gmail API has not been used in project 1 before or it is disabled.", "details": []}}).encode()
 
 
 @pytest.mark.parametrize(("exc", "expected"), [
@@ -391,6 +395,8 @@ class HttpError(Exception):
     (HttpError(503), True),
     (HttpError(429), True),
     (HttpError(404), False),
+    (HttpError(403, API_DISABLED), True),
+    (HttpError(403, b'{"error": {"message": "Insufficient Permission"}}'), False),
     (click.ClickException("account 'default' has no valid Gmail token; connect Email"), True),
     (click.ClickException("no mailbox X"), False),
 ])
