@@ -36,6 +36,7 @@ import datetime as dt
 import html
 import json
 import logging
+import unicodedata
 import os
 import pathlib
 import re
@@ -373,6 +374,10 @@ def gmail_draft(svc, msg: EmailMessage, thread_id: str | None = None) -> str:
 
 # --- mailapp backend (JavaScript for Automation) -------------------------------
 
+# Each account names its sent folder in its own locale; first hit wins, so the
+# live "Messages envoyés" beats a legacy "Sent Items" on the same account.
+MAILAPP_SENT_NAMES = ["Messages envoyés", "Sent Mail", "Éléments envoyés", "Sent Messages", "Sent", "Sent Items"]
+
 JXA_PRELUDE = r"""
 const Mail = Application("Mail");
 function account(name) { const a = Mail.accounts.whose({name: name})(); if (!a.length) throw new Error("no Mail.app account " + name); return a[0]; }
@@ -381,9 +386,7 @@ function findMailbox(acc, path) {
   for (const p of parts) { const hits = scope.whose({name: p})(); if (!hits.length) throw new Error("no mailbox " + path + " in " + acc.name() + " (top level: " + acc.mailboxes.name().join(", ") + ")"); mb = hits[0]; scope = mb.mailboxes; }
   return mb;
 }
-// Each account names its sent folder in its own locale; first hit wins, so the
-// live "Messages envoyés" beats a legacy "Sent Items" on the same account.
-const SENT_NAMES = ["Messages envoyés", "Sent Mail", "Éléments envoyés", "Sent Messages", "Sent", "Sent Items"];
+const SENT_NAMES = __SENT_NAMES__;
 function mailboxPath(acc, path) {
   if (path.toLowerCase() !== "sent") return path;
   const top = acc.mailboxes.name();
@@ -397,6 +400,7 @@ function summary(m, accName, mbPath) {
   return {id: accName + ":" + mbPath + ":" + m.id(), ts: Math.floor(m.dateReceived().getTime() / 1000), from: m.sender(), to: (m.toRecipients().map(r => r.address())).join(", "), subject: m.subject(), unread: !m.readStatus(), mailbox: mbPath};
 }
 """
+JXA_PRELUDE = JXA_PRELUDE.replace("__SENT_NAMES__", json.dumps(MAILAPP_SENT_NAMES, ensure_ascii=False))
 
 
 def jxa(script: str, timeout: int = 300) -> object:
@@ -415,6 +419,11 @@ def mailapp_mailboxes(acc_name: str) -> list[dict]:
     return jxa(f"const out = []; account({js(acc_name)}).mailboxes().forEach(mb => walk(mb, '', out)); JSON.stringify(out);")
 
 
+# Bodies Mail.app reads for one `--in body` search; past it the search is refused, since
+# each body is fetched (often from the server) on Mail's main thread.
+MAILAPP_BODY_SCAN_MAX = 500
+
+
 def mailapp_items(account: str, acc_name: str, mailbox: str, since: dt.datetime | None, limit: int, subject: str | None = None, sender: str | None = None, content: str | None = None) -> list[dict]:
     """Messages of one mailbox, newest first, filtered server-side by Mail.app's `whose`."""
     clauses = []
@@ -424,16 +433,35 @@ def mailapp_items(account: str, acc_name: str, mailbox: str, since: dt.datetime 
         clauses.append(f"subject: {{_contains: {js(subject)}}}")
     if sender:
         clauses.append(f"sender: {{_contains: {js(sender)}}}")
-    if content:
-        clauses.append(f"content: {{_contains: {js(content)}}}")
     where = "{" + ", ".join(clauses) + "}"
+    select = f"msgs.slice(0, {limit})"
+    if content is not None:
+        # A `content` clause inside `whose` loads every body in one Apple event, freezing Mail's
+        # UI until it ends; one content() call per message lets Mail handle events in between.
+        select = f"""(() => {{
+  if (msgs.length > {MAILAPP_BODY_SCAN_MAX}) throw new Error("body search would scan " + msgs.length + " messages (max {MAILAPP_BODY_SCAN_MAX}); narrow it with a later --since or a smaller --mailbox");
+  const needle = {js(content.lower())}; const hits = [];
+  for (const m of msgs) {{ if (hits.length >= {limit}) break; if ((m.content() || "").toLowerCase().includes(needle)) hits.push(m); }}
+  return hits;
+}})()"""
     script = f"""
 const acc = account({js(acc_name)}); const path = mailboxPath(acc, {js(mailbox)}); const mb = findMailbox(acc, path);
 const msgs = {"mb.messages.whose(" + where + ")()" if clauses else "mb.messages()"};
 // Mail.app returns a mailbox's messages newest first.
-const out = msgs.slice(0, {limit}).map(m => summary(m, {js(acc_name)}, path));
+const out = {select}.map(m => summary(m, {js(acc_name)}, path));
 JSON.stringify(out);"""
     return [dict(item("mailapp", account, m["id"], m["ts"], m["from"], m["to"], m["subject"], "", m["unread"], m["mailbox"])) for m in jxa(script)]
+
+
+def gmail_body_query(query: str, mailbox: str | None, since: dt.datetime | None) -> str:
+    """Gmail query equivalent to a Mail.app body search. Mail.app folder names are not Gmail
+    labels, so only a sent folder narrows it; any other mailbox widens to all mail."""
+    q = js(query)
+    if mailbox and (mailbox.lower() == "sent" or unicodedata.normalize("NFC", mailbox) in MAILAPP_SENT_NAMES):
+        q += " in:sent"
+    if since:
+        q += f" after:{since.strftime('%Y/%m/%d')}"
+    return q
 
 
 def mailapp_read(account: str, msg_id: str) -> dict:
@@ -651,6 +679,11 @@ def search(query: str, mailbox: str | None, since: str | None, limit: int, field
     if backend == "gmail":
         q = query + (f" after:{when.strftime('%Y/%m/%d')}" if when else "")
         emit(gmail_items(gmail_service(name), name, q, limit, mailbox), as_json)
+        return
+    if field == "body" and token_path(name).exists():
+        # Gmail indexes bodies server-side; Mail.app would read each one on its main thread.
+        log.warning("--in body on %s: searching through the Gmail API instead of Mail.app", name)
+        emit(gmail_items(gmail_service(name), name, gmail_body_query(query, mailbox, when), limit, None), as_json)
         return
     if not mailbox:
         raise click.ClickException("Mail.app search needs --mailbox (e.g. INBOX or Immo/Poncelet)")

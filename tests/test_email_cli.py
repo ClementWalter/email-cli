@@ -78,8 +78,8 @@ def test_mailapp_items_builds_whose_clause_and_items(monkeypatch):
         return [{"id": "Google:Immo/Poncelet:42", "ts": 1788000000, "from": "a@b", "to": "c@d", "subject": "S", "unread": True, "mailbox": "Immo/Poncelet"}]
     monkeypatch.setattr(ec, "jxa", fake_jxa)
     since = dt.datetime(2026, 4, 1, tzinfo=dt.timezone.utc)
-    items = ec.mailapp_items("default", "Google", "Immo/Poncelet", since, 10, content="Bouny")
-    assert items[0]["id"] == "Google:Immo/Poncelet:42" and "content: {_contains: \"Bouny\"}" in seen["script"] and "dateReceived" in seen["script"]
+    items = ec.mailapp_items("default", "Google", "Immo/Poncelet", since, 10, subject="Bouny")
+    assert items[0]["id"] == "Google:Immo/Poncelet:42" and "subject: {_contains: \"Bouny\"}" in seen["script"] and "dateReceived" in seen["script"]
 
 
 def test_mailapp_items_without_filters_reads_all(monkeypatch):
@@ -284,3 +284,56 @@ def test_mailapp_items_keeps_the_newest_messages(monkeypatch):
     monkeypatch.setattr(ec, "jxa", lambda script, timeout=300: seen.setdefault("s", script) and [])
     ec.mailapp_items("default", "Google", "INBOX", None, 5)
     assert "msgs.slice(0, 5).map(" in seen["s"]
+
+
+@pytest.fixture
+def body_search_script(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(ec, "jxa", lambda script, timeout=300: seen.setdefault("s", script) and [])
+    ec.mailapp_items("default", "Google", "INBOX", dt.datetime(2026, 10, 1, tzinfo=dt.timezone.utc), 5, content="Commission")
+    return seen["s"]
+
+
+def test_mailapp_body_search_keeps_content_out_of_whose(body_search_script):
+    assert "content: {" not in body_search_script
+
+
+def test_mailapp_body_search_reads_bodies_one_message_at_a_time(body_search_script):
+    assert "for (const m of msgs)" in body_search_script and "m.content()" in body_search_script
+
+
+def test_mailapp_body_search_matches_case_insensitively(body_search_script):
+    assert 'const needle = "commission"' in body_search_script
+
+
+def test_mailapp_body_search_refuses_past_the_scan_cap(body_search_script):
+    assert f"msgs.length > {ec.MAILAPP_BODY_SCAN_MAX}" in body_search_script
+
+
+def test_jxa_prelude_carries_the_sent_names():
+    assert 'const SENT_NAMES = ["Messages envoyés"' in ec.JXA_PRELUDE
+
+
+@pytest.mark.parametrize(("mailbox", "expected"), [
+    (None, '"commission" after:2026/03/01'),
+    ("Tous les messages", '"commission" after:2026/03/01'),
+    ("sent", '"commission" in:sent after:2026/03/01'),
+    ("Messages envoyés", '"commission" in:sent after:2026/03/01'),
+])
+def test_gmail_body_query(mailbox, expected):
+    assert ec.gmail_body_query("commission", mailbox, dt.datetime(2026, 3, 1)) == expected
+
+
+def test_search_in_body_goes_through_gmail_when_a_token_exists(tmp_path, monkeypatch):
+    monkeypatch.setattr(ec, "CONFIG_DIR", tmp_path)
+    (tmp_path / "accounts" / "default").mkdir(parents=True)
+    (tmp_path / "accounts" / "default" / "token.json").write_text("{}")
+    monkeypatch.setattr(ec, "account_config", lambda account: ("default", {"mailapp": "Google"}))
+    monkeypatch.setattr(ec, "IS_MACOS", True)
+    monkeypatch.setattr(ec, "gmail_service", lambda name: "svc")
+    monkeypatch.setattr(ec, "jxa", lambda *a, **k: pytest.fail("Mail.app must not be queried"))
+    seen = {}
+    monkeypatch.setattr(ec, "gmail_items", lambda svc, account, q, limit, label: seen.setdefault("q", q) and [])
+    from click.testing import CliRunner
+    CliRunner().invoke(ec.cli, ["search", "commission", "--backend", "mailapp", "--mailbox", "Tous les messages", "--in", "body", "--since", "2026-03-01"], catch_exceptions=False)
+    assert seen["q"] == '"commission" after:2026/03/01'
