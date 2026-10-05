@@ -234,10 +234,9 @@ class GmailApi:
     """Thin wrapper turning Google's HTTP errors into one-line CLI errors."""
 
     def __init__(self, account: str):
-        from googleapiclient.discovery import build
-
         import httplib2
         from google_auth_httplib2 import AuthorizedHttp
+        from googleapiclient.discovery import build
 
         self.account = account
         # A bounded socket timeout turns a stalled Gmail into an error `auto` can fall back from.
@@ -860,10 +859,12 @@ def reply(msg_id: str, body: str | None, file_: pathlib.Path | None, to: str | N
 
 
 # Provider commands share the same execution policy as the app and MCP.
-from pathlib import Path as _PolicyPath
 import sys as _policy_sys
+from pathlib import Path as _PolicyPath
+
 _policy_sys.path.insert(0, str(_PolicyPath(__file__).resolve().parent))
 from onebrain_policy import install as _install_onebrain_policy
+
 _install_onebrain_policy(cli, 'email')
 
 if __name__ == "__main__":
