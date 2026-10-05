@@ -378,8 +378,19 @@ const Mail = Application("Mail");
 function account(name) { const a = Mail.accounts.whose({name: name})(); if (!a.length) throw new Error("no Mail.app account " + name); return a[0]; }
 function findMailbox(acc, path) {
   const parts = path.split("/"); let scope = acc.mailboxes; let mb = null;
-  for (const p of parts) { const hits = scope.whose({name: p})(); if (!hits.length) throw new Error("no mailbox " + path + " in " + acc.name()); mb = hits[0]; scope = mb.mailboxes; }
+  for (const p of parts) { const hits = scope.whose({name: p})(); if (!hits.length) throw new Error("no mailbox " + path + " in " + acc.name() + " (top level: " + acc.mailboxes.name().join(", ") + ")"); mb = hits[0]; scope = mb.mailboxes; }
   return mb;
+}
+// Each account names its sent folder in its own locale; first hit wins, so the
+// live "Messages envoyés" beats a legacy "Sent Items" on the same account.
+const SENT_NAMES = ["Messages envoyés", "Sent Mail", "Éléments envoyés", "Sent Messages", "Sent", "Sent Items"];
+function mailboxPath(acc, path) {
+  if (path.toLowerCase() !== "sent") return path;
+  const top = acc.mailboxes.name();
+  // Some accounts (Outlook) store names decomposed (E + U+0301), so compare in NFC.
+  let hit; for (const n of SENT_NAMES) { hit = top.find(t => t.normalize("NFC") === n); if (hit) break; }
+  if (!hit) throw new Error("no sent mailbox in " + acc.name() + " (top level: " + top.join(", ") + ")");
+  return hit;
 }
 function walk(mb, prefix, out) { const name = prefix + mb.name(); out.push({path: name, count: mb.messages.length, unread: mb.unreadCount()}); mb.mailboxes().forEach(c => walk(c, name + "/", out)); }
 function summary(m, accName, mbPath) {
@@ -417,9 +428,10 @@ def mailapp_items(account: str, acc_name: str, mailbox: str, since: dt.datetime 
         clauses.append(f"content: {{_contains: {js(content)}}}")
     where = "{" + ", ".join(clauses) + "}"
     script = f"""
-const acc = account({js(acc_name)}); const mb = findMailbox(acc, {js(mailbox)});
+const acc = account({js(acc_name)}); const path = mailboxPath(acc, {js(mailbox)}); const mb = findMailbox(acc, path);
 const msgs = {"mb.messages.whose(" + where + ")()" if clauses else "mb.messages()"};
-const out = msgs.slice(-{limit}).reverse().map(m => summary(m, {js(acc_name)}, {js(mailbox)}));
+// Mail.app returns a mailbox's messages newest first.
+const out = msgs.slice(0, {limit}).map(m => summary(m, {js(acc_name)}, path));
 JSON.stringify(out);"""
     return [dict(item("mailapp", account, m["id"], m["ts"], m["from"], m["to"], m["subject"], "", m["unread"], m["mailbox"])) for m in jxa(script)]
 
@@ -608,7 +620,10 @@ def mailboxes(account: str | None, backend: str, as_json: bool) -> None:
 @backend_option
 @json_option
 def list_cmd(mailbox: str, since: str | None, limit: int, account: str | None, backend: str, as_json: bool) -> None:
-    """Recent messages of a mailbox (Mail.app path like "Immo/Poncelet") or Gmail label."""
+    """Recent messages of a mailbox (Mail.app path like "Immo/Poncelet") or Gmail label.
+
+    MAILBOX "sent" resolves to the account's own sent folder on either backend.
+    """
     name, acc = account_config(account)
     backend = resolve_backend(backend, name, acc)
     when = parse_since(since)

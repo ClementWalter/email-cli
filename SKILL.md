@@ -15,6 +15,7 @@ scripts. `send` is a dry run unless `--yes`.
 email accounts                                        # names, addresses, which backend each gets here
 email mailboxes -a default                            # Gmail labels, or Mail.app mailboxes (recursive, with counts)
 email list "Immo/Poncelet" -a default --since 2026-04-01 --limit 20
+email list sent -a zama --since 2026-10-01             # the account's own sent folder, whatever its locale name
 email search "from:loic.thomas newer_than:90d" -a default          # Gmail query syntax
 email search "Bouny" -a default --backend mailapp --mailbox Immo/Poncelet --in body --since 2026-01-01
 email read 18f3a2b9c0d1e2f3 -a default               # Gmail id
@@ -56,6 +57,15 @@ browser.
 Gmail ids are Gmail's message ids. Mail.app ids are `<account>:<mailbox path>:<id>`
 and `read` / `attachments` infer the backend from that shape. Both are stable
 for a caller's own state.
+
+## Sent mail
+
+`list sent` / `search --mailbox sent` resolve to each account's real sent
+folder, so don't guess its name. On Mail.app it is `Messages envoyés` for
+`default` and `kakarot`, `Sent Mail` for `zama`, `Éléments envoyés` for
+`outlook`; `default` also has a legacy `Sent Items` that is not the live one.
+iCloud exposes no mailboxes to Mail.app here, so `sent` fails there with the
+account's top-level list. On Gmail `sent` is the `SENT` label.
 
 ## Not this tool
 

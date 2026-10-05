@@ -270,3 +270,17 @@ def test_reply_rejects_draft_with_yes():
     from click.testing import CliRunner
     result = CliRunner().invoke(ec.reply, ["abc", "--body", "x", "--draft", "--yes", "--backend", "gmail"])
     assert "exclusive" in result.output
+
+
+def test_mailapp_items_resolves_mailbox_through_sent_alias(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(ec, "jxa", lambda script, timeout=300: seen.setdefault("s", script) and [])
+    ec.mailapp_items("default", "Google", "sent", None, 5)
+    assert 'const path = mailboxPath(acc, "sent"); const mb = findMailbox(acc, path);' in seen["s"]
+
+
+def test_mailapp_items_keeps_the_newest_messages(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(ec, "jxa", lambda script, timeout=300: seen.setdefault("s", script) and [])
+    ec.mailapp_items("default", "Google", "INBOX", None, 5)
+    assert "msgs.slice(0, 5).map(" in seen["s"]
