@@ -22,7 +22,10 @@ account name. Each command takes `--account` and `--backend auto|gmail|mailapp`:
             accounts Gmail cannot (iCloud, Outlook, IMAP) but only on a Mac
             with Mail running, and full-text search there is slow: bound it
             with --since and a mailbox.
-  auto      gmail when the account has a token, else mailapp on macOS.
+  auto      gmail when the account has a token, else mailapp on macOS. When Gmail
+            times out, is unreachable or rejects the token, mailboxes/list/
+            search fall back to mailapp; send never does (a timed-out send may
+            have gone through).
 
 Commands: accounts, mailboxes, list, search, read, attachments, send (dry run
 unless --yes). Every read supports --json; message ids are the backend's own
@@ -224,14 +227,22 @@ def save_token(creds, account: str) -> None:
     auth_store.save(path, json.loads(creds.to_json()), "email", account)
 
 
+GMAIL_TIMEOUT_S = 20
+
+
 class GmailApi:
     """Thin wrapper turning Google's HTTP errors into one-line CLI errors."""
 
     def __init__(self, account: str):
         from googleapiclient.discovery import build
 
+        import httplib2
+        from google_auth_httplib2 import AuthorizedHttp
+
         self.account = account
-        self.svc = build("gmail", "v1", credentials=gmail_credentials(account), cache_discovery=False)
+        # A bounded socket timeout turns a stalled Gmail into an error `auto` can fall back from.
+        http = AuthorizedHttp(gmail_credentials(account), http=httplib2.Http(timeout=GMAIL_TIMEOUT_S))
+        self.svc = build("gmail", "v1", http=http, cache_discovery=False)
 
     def users(self):
         return self.svc.users()
@@ -239,6 +250,37 @@ class GmailApi:
 
 def gmail_service(account: str):
     return GmailApi(account)
+
+
+def gmail_unavailable(exc: Exception) -> bool:
+    """Gmail is down, unreachable or not authorised — not that the request itself was wrong."""
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    kind = type(exc).__name__
+    if kind == "HttpError":
+        return getattr(getattr(exc, "resp", None), "status", 0) in (429, 500, 502, 503, 504)
+    if kind in ("ServerNotFoundError", "TransportError", "RefreshError"):
+        return True
+    return isinstance(exc, click.ClickException) and "no valid Gmail token" in exc.message
+
+
+def run_backend(option: str, account: str, acc: dict, gmail, mailapp, macos: bool = IS_MACOS) -> None:
+    """Run `gmail` or `mailapp` for the resolved backend. Under `auto`, Mail.app is the fallback
+    when Gmail cannot answer; an explicit --backend never switches."""
+    backend = resolve_backend(option, account, acc, macos)
+    if backend != "gmail":
+        mailapp()
+        return
+    if option != "auto" or not (macos and acc.get("mailapp")):
+        gmail()
+        return
+    try:
+        gmail()
+    except Exception as exc:
+        if not gmail_unavailable(exc):
+            raise
+        log.warning("Gmail unavailable for %s (%s: %s); falling back to Mail.app", account, type(exc).__name__, exc)
+        mailapp()
 
 
 def client_project_id(account: str | None) -> str:
@@ -627,17 +669,18 @@ cli.add_command(auth_sync, "auth-sync")
 def mailboxes(account: str | None, backend: str, as_json: bool) -> None:
     """List mailboxes (Mail.app, recursive) or labels (Gmail) of an account."""
     name, acc = account_config(account)
-    backend = resolve_backend(backend, name, acc)
-    if backend == "gmail":
-        rows = [{"path": lb["name"], "id": lb["id"], "type": lb.get("type")} for lb in gmail_labels(gmail_service(name))]
-    else:
-        rows = mailapp_mailboxes(acc["mailapp"])
-    if as_json:
-        click.echo(json.dumps(rows, ensure_ascii=False, indent=2))
-        return
-    for r in rows:
-        extra = f"  {r.get('count', '')} msgs, {r.get('unread', '')} unread" if "count" in r else f"  ({r.get('id')})"
-        click.echo(f"{r['path']}{extra}")
+
+    def show(rows: list[dict]) -> None:
+        if as_json:
+            click.echo(json.dumps(rows, ensure_ascii=False, indent=2))
+            return
+        for r in rows:
+            extra = f"  {r.get('count', '')} msgs, {r.get('unread', '')} unread" if "count" in r else f"  ({r.get('id')})"
+            click.echo(f"{r['path']}{extra}")
+
+    run_backend(backend, name, acc,
+                gmail=lambda: show([{"path": lb["name"], "id": lb["id"], "type": lb.get("type")} for lb in gmail_labels(gmail_service(name))]),
+                mailapp=lambda: show(mailapp_mailboxes(acc["mailapp"])))
 
 
 @cli.command("list")
@@ -653,13 +696,11 @@ def list_cmd(mailbox: str, since: str | None, limit: int, account: str | None, b
     MAILBOX "sent" resolves to the account's own sent folder on either backend.
     """
     name, acc = account_config(account)
-    backend = resolve_backend(backend, name, acc)
     when = parse_since(since)
-    if backend == "gmail":
-        q = f"after:{when.strftime('%Y/%m/%d')}" if when else ""
-        emit(gmail_items(gmail_service(name), name, q, limit, mailbox), as_json)
-    else:
-        emit(mailapp_items(name, acc["mailapp"], mailbox, when, limit), as_json)
+    q = f"after:{when.strftime('%Y/%m/%d')}" if when else ""
+    run_backend(backend, name, acc,
+                gmail=lambda: emit(gmail_items(gmail_service(name), name, q, limit, mailbox), as_json),
+                mailapp=lambda: emit(mailapp_items(name, acc["mailapp"], mailbox, when, limit), as_json))
 
 
 @cli.command()
@@ -674,21 +715,23 @@ def list_cmd(mailbox: str, since: str | None, limit: int, account: str | None, b
 def search(query: str, mailbox: str | None, since: str | None, limit: int, field: str, account: str | None, backend: str, as_json: bool) -> None:
     """Search messages. Gmail: full query syntax (from:, subject:, has:attachment, newer_than:30d...). Mail.app: substring on one field."""
     name, acc = account_config(account)
-    backend = resolve_backend(backend, name, acc)
     when = parse_since(since)
-    if backend == "gmail":
-        q = query + (f" after:{when.strftime('%Y/%m/%d')}" if when else "")
-        emit(gmail_items(gmail_service(name), name, q, limit, mailbox), as_json)
-        return
-    if field == "body" and token_path(name).exists():
+
+    def via_mailapp() -> None:
+        if not mailbox:
+            raise click.ClickException("Mail.app search needs --mailbox (e.g. INBOX or Immo/Poncelet)")
+        kwargs = {"subject": query} if field == "subject" else {"sender": query} if field == "from" else {"content": query}
+        emit(mailapp_items(name, acc["mailapp"], mailbox, when, limit, **kwargs), as_json)
+
+    if backend == "mailapp" and field == "body" and token_path(name).exists():
         # Gmail indexes bodies server-side; Mail.app would read each one on its main thread.
         log.warning("--in body on %s: searching through the Gmail API instead of Mail.app", name)
-        emit(gmail_items(gmail_service(name), name, gmail_body_query(query, mailbox, when), limit, None), as_json)
+        run_backend("auto", name, acc,
+                    gmail=lambda: emit(gmail_items(gmail_service(name), name, gmail_body_query(query, mailbox, when), limit, None), as_json),
+                    mailapp=via_mailapp)
         return
-    if not mailbox:
-        raise click.ClickException("Mail.app search needs --mailbox (e.g. INBOX or Immo/Poncelet)")
-    kwargs = {"subject": query} if field == "subject" else {"sender": query} if field == "from" else {"content": query}
-    emit(mailapp_items(name, acc["mailapp"], mailbox, when, limit, **kwargs), as_json)
+    q = query + (f" after:{when.strftime('%Y/%m/%d')}" if when else "")
+    run_backend(backend, name, acc, gmail=lambda: emit(gmail_items(gmail_service(name), name, q, limit, mailbox), as_json), mailapp=via_mailapp)
 
 
 @cli.command()

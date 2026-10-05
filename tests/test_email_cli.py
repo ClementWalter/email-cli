@@ -337,3 +337,72 @@ def test_search_in_body_goes_through_gmail_when_a_token_exists(tmp_path, monkeyp
     monkeypatch.setattr(ec, "gmail_items", lambda svc, account, q, limit, label: seen.setdefault("q", q) and [])
     CliRunner().invoke(ec.cli, ["search", "commission", "--backend", "mailapp", "--mailbox", "Tous les messages", "--in", "body", "--since", "2026-03-01"], catch_exceptions=False)
     assert seen["q"] == '"commission" after:2026/03/01'
+
+
+@pytest.fixture
+def gmail_account(tmp_path, monkeypatch):
+    monkeypatch.setattr(ec, "CONFIG_DIR", tmp_path)
+    (tmp_path / "accounts" / "default").mkdir(parents=True)
+    (tmp_path / "accounts" / "default" / "token.json").write_text("{}")
+    return {"mailapp": "Google"}
+
+
+def gmail_times_out():
+    raise TimeoutError("timed out")
+
+
+def test_auto_falls_back_to_mailapp_when_gmail_times_out(gmail_account):
+    ran = []
+    ec.run_backend("auto", "default", gmail_account, gmail=gmail_times_out, mailapp=lambda: ran.append("mailapp"), macos=True)
+    assert ran == ["mailapp"]
+
+
+def test_explicit_gmail_backend_does_not_fall_back(gmail_account):
+    with pytest.raises(TimeoutError):
+        ec.run_backend("gmail", "default", gmail_account, gmail=gmail_times_out, mailapp=lambda: None, macos=True)
+
+
+def test_auto_without_mailapp_reraises_gmail_failure(gmail_account):
+    with pytest.raises(TimeoutError):
+        ec.run_backend("auto", "default", {"mailapp": ""}, gmail=gmail_times_out, mailapp=lambda: None, macos=True)
+
+
+def test_auto_reraises_a_bad_request_instead_of_falling_back(gmail_account):
+    def bad_query():
+        raise ValueError("bad query")
+    with pytest.raises(ValueError):
+        ec.run_backend("auto", "default", gmail_account, gmail=bad_query, mailapp=lambda: None, macos=True)
+
+
+def test_auto_uses_gmail_when_it_answers(gmail_account):
+    ran = []
+    ec.run_backend("auto", "default", gmail_account, gmail=lambda: ran.append("gmail"), mailapp=lambda: ran.append("mailapp"), macos=True)
+    assert ran == ["gmail"]
+
+
+class HttpError(Exception):
+    def __init__(self, status):
+        self.resp = type("Resp", (), {"status": status})()
+
+
+@pytest.mark.parametrize(("exc", "expected"), [
+    (TimeoutError(), True),
+    (ConnectionRefusedError(), True),
+    (HttpError(503), True),
+    (HttpError(429), True),
+    (HttpError(404), False),
+    (click.ClickException("account 'default' has no valid Gmail token; connect Email"), True),
+    (click.ClickException("no mailbox X"), False),
+])
+def test_gmail_unavailable(exc, expected):
+    assert ec.gmail_unavailable(exc) is expected
+
+
+def test_list_falls_back_to_mailapp_when_gmail_is_down(gmail_account, monkeypatch):
+    monkeypatch.setattr(ec, "account_config", lambda account: ("default", gmail_account))
+    monkeypatch.setattr(ec, "gmail_service", lambda name: gmail_times_out())
+    monkeypatch.setattr(ec, "mailapp_items", lambda *a, **k: [ec.item("mailapp", "default", "Google:INBOX:1", 1788000000, "a@b", "c@d", "via mail.app")])
+    run_backend = ec.run_backend
+    monkeypatch.setattr(ec, "run_backend", lambda *a, **k: run_backend(*a, **k, macos=True))
+    result = CliRunner().invoke(ec.cli, ["list", "INBOX", "--json"], catch_exceptions=False)
+    assert json.loads(result.stdout)[0]["subject"] == "via mail.app"

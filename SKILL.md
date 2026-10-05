@@ -17,7 +17,8 @@ email mailboxes -a default                            # Gmail labels, or Mail.ap
 email list "Immo/Poncelet" -a default --since 2026-04-01 --limit 20
 email list sent -a zama --since 2026-10-01             # the account's own sent folder, whatever its locale name
 email search "from:loic.thomas newer_than:90d" -a default          # Gmail query syntax
-email search "Bouny" -a default --backend mailapp --mailbox Immo/Poncelet --in body --since 2026-01-01
+email search "Bouny" -a default --since 2026-01-01                 # Gmail full-text search
+email search "Bouny" -a zama --mailbox INBOX --in body --since 2026-09-01   # Mail.app-only account
 email read 18f3a2b9c0d1e2f3 -a default               # Gmail id
 email read "Google:Immo/Poncelet:1234" -a default     # Mail.app id, backend inferred from the shape
 email attachments <id> -a default --out ~/Downloads/devis
@@ -43,7 +44,12 @@ Mail.app "Google"), `zama`, `kakarot`, `icloud`, `outlook`.
 | mailapp | macOS with Mail.app and its accounts           | every account Mail.app has                  | Mac only; `--in body` reads each body (refused past 500 candidates, so bound it with `--since` and a mailbox); on an account with a Gmail token it runs through the Gmail API instead |
 
 `auto` = gmail when `~/.config/email-cli/accounts/<name>/token.json` exists,
-else mailapp on macOS. **For a Google account, Gmail is the rule, not a
+else mailapp on macOS. Mail.app is the fallback, not a peer: under `auto`,
+`mailboxes`/`list`/`search` switch to it (with a warning) when Gmail times out
+after 20 s, is unreachable, answers 429/5xx or has a dead token. `read`,
+`attachments` and `reply` cannot switch (ids are backend-specific), and `send`
+never does, since a timed-out Gmail send may still have been delivered. An
+explicit `--backend` never switches. **For a Google account, Gmail is the rule, not a
 preference**: it is about 30x faster on searches and sees messages Mail.app has
 not synced. Do not force `--backend mailapp` on a Google account; if one has no
 token yet, run `email auth login -a <name>` once instead. Mail.app is for the
