@@ -49,7 +49,11 @@ else mailapp on macOS. Mail.app is the fallback, not a peer: under `auto`,
 after 20 s, is unreachable, answers 429/5xx or has a dead token. `read`,
 `attachments` and `reply` cannot switch (ids are backend-specific), and `send`
 never does, since a timed-out Gmail send may still have been delivered. An
-explicit `--backend` never switches. **For a Google account, Gmail is the rule, not a
+explicit `--backend` never switches. A Mail.app account syncing from
+`imap.gmail.com` is a Google account: `email accounts` flags it (and `auto`
+warns) while it has no token, so connect it with `email auth login -a <name>`.
+The IMAP hosts are cached in `~/.config/email-cli/mailapp-servers.json`, which
+`email accounts` refreshes. **For a Google account, Gmail is the rule, not a
 preference**: it is about 30x faster on searches and sees messages Mail.app has
 not synced. Do not force `--backend mailapp` on a Google account; if one has no
 token yet, run `email auth login -a <name>` once instead. Mail.app is for the

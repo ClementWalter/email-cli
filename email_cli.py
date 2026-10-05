@@ -109,6 +109,26 @@ def client_secret_path(account: str) -> pathlib.Path | None:
     return None
 
 
+GMAIL_IMAP_HOSTS = ("imap.gmail.com", "imap.googlemail.com")
+# Mail.app account name -> IMAP host. Hosts rarely change, and asking Mail costs an Apple
+# event (and launches Mail), so `email accounts` refreshes it and other commands read it.
+MAILAPP_SERVERS_CACHE = CONFIG_DIR / "mailapp-servers.json"
+
+
+def mailapp_servers(refresh: bool = False) -> dict[str, str]:
+    if not refresh and MAILAPP_SERVERS_CACHE.is_file():
+        return json.loads(MAILAPP_SERVERS_CACHE.read_text())
+    servers = jxa("const out = {}; Mail.accounts().forEach(a => { out[a.name()] = a.serverName() || ''; }); JSON.stringify(out);") or {}
+    MAILAPP_SERVERS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    MAILAPP_SERVERS_CACHE.write_text(json.dumps(servers, ensure_ascii=False, indent=2))
+    return servers
+
+
+def is_gmail_hosted(acc: dict, servers: dict[str, str]) -> bool:
+    """The Mail.app account syncs from Google's IMAP, so the Gmail API can serve it."""
+    return servers.get(acc.get("mailapp", ""), "").lower() in GMAIL_IMAP_HOSTS
+
+
 def resolve_backend(option: str, account: str, acc: dict, macos: bool = IS_MACOS) -> str:
     if option == "auto":
         if not token_path(account).exists():
@@ -116,6 +136,8 @@ def resolve_backend(option: str, account: str, acc: dict, macos: bool = IS_MACOS
         if token_path(account).exists():
             return "gmail"
         if macos and acc.get("mailapp"):
+            if is_gmail_hosted(acc, mailapp_servers()):
+                log.warning("%s is a Google account served through Mail.app; `email auth login -a %s` makes it use the faster Gmail API", account, account)
             return "mailapp"
         raise click.ClickException(f"account {account!r}: no Gmail token (run `email auth login --account {account}`) and no Mail.app here")
     if option == "mailapp" and not macos:
@@ -612,15 +634,18 @@ def main() -> None:
 def accounts(as_json: bool) -> None:
     """List configured accounts and which backend each would use here."""
     cfg = load_config()
+    servers = mailapp_servers(refresh=True) if IS_MACOS else {}
     rows = []
     for name, acc in cfg["accounts"].items():
-        rows.append({"name": name, "address": acc.get("address", ""), "mailapp": acc.get("mailapp", ""), "gmail_token": token_path(name).exists(), "default": name == cfg.get("default_account")})
+        rows.append({"name": name, "address": acc.get("address", ""), "mailapp": acc.get("mailapp", ""), "gmail_token": token_path(name).exists(),
+                     "gmail_hosted": is_gmail_hosted(acc, servers), "default": name == cfg.get("default_account")})
     if as_json:
         click.echo(json.dumps(rows, indent=2))
         return
     for r in rows:
         backend = "gmail" if r["gmail_token"] else ("mailapp" if IS_MACOS and r["mailapp"] else "-")
-        click.echo(f"{'*' if r['default'] else ' '} {r['name']:<10} {r['address']:<30} mailapp={r['mailapp'] or '-':<10} → {backend}")
+        hint = f"  (Google account: email auth login -a {r['name']})" if r["gmail_hosted"] and not r["gmail_token"] else ""
+        click.echo(f"{'*' if r['default'] else ' '} {r['name']:<10} {r['address']:<30} mailapp={r['mailapp'] or '-':<10} → {backend}{hint}")
 
 
 @cli.group()
