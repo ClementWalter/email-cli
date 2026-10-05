@@ -40,7 +40,7 @@ Mail.app "Google"), `zama`, `kakarot`, `icloud`, `outlook`.
 | backend | needs                                          | strengths                                   | limits                                              |
 | ------- | ---------------------------------------------- | ------------------------------------------- | --------------------------------------------------- |
 | gmail   | `email auth login -a <name>` once, in a browser | any machine, Gmail search, fast, attachments | Google accounts only                                |
-| mailapp | macOS with Mail.app and its accounts           | every account Mail.app has                  | Mac only; `--in body` search is slow, bound it with `--since` and a mailbox |
+| mailapp | macOS with Mail.app and its accounts           | every account Mail.app has                  | Mac only; `--in body` reads each body (refused past 500 candidates, so bound it with `--since` and a mailbox); on an account with a Gmail token it runs through the Gmail API instead |
 
 `auto` = gmail when `~/.config/email-cli/accounts/<name>/token.json` exists,
 else mailapp on macOS. **For a Google account, Gmail is the rule, not a
