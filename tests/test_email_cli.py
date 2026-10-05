@@ -58,6 +58,7 @@ def test_resolve_auto_prefers_gmail_token(tmp_path, monkeypatch):
 
 def test_resolve_auto_falls_back_to_mailapp_on_mac(tmp_path, monkeypatch):
     monkeypatch.setattr(ec, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ec, "mailapp_servers", lambda refresh=False: {"iCloud": "imap.mail.me.com"})
     assert ec.resolve_backend("auto", "icloud", {"mailapp": "iCloud"}, macos=True) == "mailapp"
 
 
@@ -412,3 +413,41 @@ def test_list_falls_back_to_mailapp_when_gmail_is_down(gmail_account, monkeypatc
     monkeypatch.setattr(ec, "run_backend", lambda *a, **k: run_backend(*a, **k, macos=True))
     result = CliRunner().invoke(ec.cli, ["list", "INBOX", "--json"], catch_exceptions=False)
     assert json.loads(result.stdout)[0]["subject"] == "via mail.app"
+
+
+@pytest.mark.parametrize(("server", "expected"), [
+    ("imap.gmail.com", True),
+    ("IMAP.GMAIL.COM", True),
+    ("imap.googlemail.com", True),
+    ("imap.mail.me.com", False),
+    ("", False),
+])
+def test_is_gmail_hosted(server, expected):
+    assert ec.is_gmail_hosted({"mailapp": "Kakarot"}, {"Kakarot": server}) is expected
+
+
+def test_is_gmail_hosted_unknown_mailapp_account():
+    assert ec.is_gmail_hosted({"mailapp": "Kakarot"}, {}) is False
+
+
+def test_resolve_auto_hints_login_for_a_google_account_on_mailapp(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(ec, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ec, "mailapp_servers", lambda refresh=False: {"Kakarot": "imap.gmail.com"})
+    ec.resolve_backend("auto", "kakarot", {"mailapp": "Kakarot"}, macos=True)
+    assert "email auth login -a kakarot" in caplog.text
+
+
+def test_mailapp_servers_reads_the_cache_without_asking_mail(tmp_path, monkeypatch):
+    cache = tmp_path / "mailapp-servers.json"
+    cache.write_text('{"Kakarot": "imap.gmail.com"}')
+    monkeypatch.setattr(ec, "MAILAPP_SERVERS_CACHE", cache)
+    monkeypatch.setattr(ec, "jxa", lambda *a, **k: pytest.fail("Mail.app must not be queried"))
+    assert ec.mailapp_servers() == {"Kakarot": "imap.gmail.com"}
+
+
+def test_mailapp_servers_refresh_writes_the_cache(tmp_path, monkeypatch):
+    cache = tmp_path / "mailapp-servers.json"
+    monkeypatch.setattr(ec, "MAILAPP_SERVERS_CACHE", cache)
+    monkeypatch.setattr(ec, "jxa", lambda *a, **k: {"Zama": "imap.gmail.com"})
+    ec.mailapp_servers(refresh=True)
+    assert json.loads(cache.read_text()) == {"Zama": "imap.gmail.com"}
