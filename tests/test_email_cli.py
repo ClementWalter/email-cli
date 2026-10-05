@@ -11,6 +11,7 @@ import json
 
 import click
 import pytest
+from click.testing import CliRunner
 
 import email_cli as ec
 
@@ -321,7 +322,7 @@ def test_jxa_prelude_carries_the_sent_names():
     ("Messages envoyés", '"commission" in:sent after:2026/03/01'),
 ])
 def test_gmail_body_query(mailbox, expected):
-    assert ec.gmail_body_query("commission", mailbox, dt.datetime(2026, 3, 1)) == expected
+    assert ec.gmail_body_query("commission", mailbox, dt.datetime(2026, 3, 1, tzinfo=dt.timezone.utc)) == expected
 
 
 def test_search_in_body_goes_through_gmail_when_a_token_exists(tmp_path, monkeypatch):
@@ -334,6 +335,5 @@ def test_search_in_body_goes_through_gmail_when_a_token_exists(tmp_path, monkeyp
     monkeypatch.setattr(ec, "jxa", lambda *a, **k: pytest.fail("Mail.app must not be queried"))
     seen = {}
     monkeypatch.setattr(ec, "gmail_items", lambda svc, account, q, limit, label: seen.setdefault("q", q) and [])
-    from click.testing import CliRunner
     CliRunner().invoke(ec.cli, ["search", "commission", "--backend", "mailapp", "--mailbox", "Tous les messages", "--in", "body", "--since", "2026-03-01"], catch_exceptions=False)
     assert seen["q"] == '"commission" after:2026/03/01'
