@@ -36,12 +36,12 @@ import datetime as dt
 import html
 import json
 import logging
-import unicodedata
 import os
 import pathlib
 import re
 import subprocess
 import sys
+import unicodedata
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 
