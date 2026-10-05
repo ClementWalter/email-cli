@@ -257,7 +257,9 @@ def gmail_unavailable(exc: Exception) -> bool:
         return True
     kind = type(exc).__name__
     if kind == "HttpError":
-        return getattr(getattr(exc, "resp", None), "status", 0) in (429, 500, 502, 503, 504)
+        status = getattr(getattr(exc, "resp", None), "status", 0)
+        # A 403 for a disabled API is a setup gap, not a refusal of this request.
+        return status in (429, 500, 502, 503, 504) or (status == 403 and explain_http_error(exc).startswith("Gmail API is not enabled"))
     if kind in ("ServerNotFoundError", "TransportError", "RefreshError"):
         return True
     return isinstance(exc, click.ClickException) and "no valid Gmail token" in exc.message
