@@ -62,6 +62,24 @@ accounts Gmail cannot serve (iCloud, Outlook, IMAP). The Gmail token reuses gdri
 a Document in the 1Password vault `Claudine` so a box restores it without a
 browser.
 
+## Dead Gmail token in an unattended run
+
+`stored Gmail grant for <name> is dead` means the token was revoked or expired;
+only `email auth login -a <name>` (a browser consent) restores it, so a
+heartbeat cannot fix it. Report it to the user as an action item with that
+exact command, and keep working through the automatic Mail.app fallback:
+
+- `email list <mailbox> --since <date> -a <name>` and `email list sent ...` work
+  as usual.
+- `email search` needs `--mailbox` and a plain substring with `--in
+  subject|from|body`; Gmail syntax (`after:`, `from:`, `newer_than:`...) is
+  refused with an error, since Mail.app would match it literally.
+- Mail.app only sees what it has synced, so an empty result is not proof the
+  mail does not exist. Say so rather than concluding "nothing received".
+
+Do not hand-roll `osa run 'tell application "Mail" ...'` around the CLI, and do
+not pass `--backend mailapp` for this: the fallback already does it.
+
 ## Ids
 
 Gmail ids are Gmail's message ids. Mail.app ids are `<account>:<mailbox path>:<id>`
