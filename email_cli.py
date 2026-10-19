@@ -148,7 +148,7 @@ def resolve_backend(option: str, account: str, acc: dict, macos: bool = IS_MACOS
 # --- shared shapes ----------------------------------------------------------
 
 # Gmail search operators; on Mail.app they would be matched as literal substrings.
-GMAIL_OPERATOR = re.compile(r"(?<![\w.])-?(from|to|cc|bcc|subject|label|in|is|has|filename|after|before|older|newer|older_than|newer_than|larger|smaller|size|category|list|deliveredto|rfc822msgid):\S", re.I)
+GMAIL_OPERATOR = re.compile(r"(?<![\w.])-?(from|to|cc|bcc|subject|label|in|is|has|filename|after|before|older|newer|older_than|newer_than|larger|smaller|size|category|list|deliveredto|rfc822msgid):\S", re.IGNORECASE)
 
 
 def gmail_query_operator(query: str) -> str | None:
