@@ -91,6 +91,23 @@ def test_mailapp_items_without_filters_reads_all(monkeypatch):
     assert "mb.messages()" in seen["s"] and "whose" not in seen["s"]
 
 
+@pytest.mark.parametrize("query", ["after:2026/10/18", "from:alice@x.org", "-in:inbox", "newer_than:2d", "Subject:Bouny"])
+def test_gmail_query_operator_detects_gmail_syntax(query):
+    assert ec.gmail_query_operator(query) is not None
+
+
+@pytest.mark.parametrize("query", ["Bouny", "Re: devis", "rendez-vous 10:30", "alice@x.org"])
+def test_gmail_query_operator_ignores_plain_substring(query):
+    assert ec.gmail_query_operator(query) is None
+
+
+def test_search_refuses_gmail_syntax_on_mailapp(monkeypatch):
+    monkeypatch.setattr(ec, "IS_MACOS", True)
+    monkeypatch.setattr(ec, "account_config", lambda account: ("default", {"mailapp": "Google"}))
+    result = CliRunner().invoke(ec.cli, ["search", "after:2026/10/18", "--mailbox", "INBOX", "--backend", "mailapp"])
+    assert "uses Gmail syntax (after:)" in result.output
+
+
 def test_build_message_has_attachment():
     import pathlib, tempfile
     with tempfile.TemporaryDirectory() as tmp:

@@ -147,6 +147,16 @@ def resolve_backend(option: str, account: str, acc: dict, macos: bool = IS_MACOS
 
 # --- shared shapes ----------------------------------------------------------
 
+# Gmail search operators; on Mail.app they would be matched as literal substrings.
+GMAIL_OPERATOR = re.compile(r"(?<![\w.])-?(from|to|cc|bcc|subject|label|in|is|has|filename|after|before|older|newer|older_than|newer_than|larger|smaller|size|category|list|deliveredto|rfc822msgid):\S", re.I)
+
+
+def gmail_query_operator(query: str) -> str | None:
+    """The first Gmail operator in `query`, if any."""
+    m = GMAIL_OPERATOR.search(query)
+    return m.group(1) + ":" if m else None
+
+
 def item(backend: str, account: str, msg_id: str, ts: int | None, sender: str, to: str, subject: str, snippet: str = "", unread: bool | None = None, mailbox: str = "") -> dict:
     return {"id": msg_id, "backend": backend, "account": account, "mailbox": mailbox, "ts": ts, "from": sender, "to": to, "subject": subject, "snippet": snippet, "unread": unread}
 
@@ -744,6 +754,13 @@ def search(query: str, mailbox: str | None, since: str | None, limit: int, field
     when = parse_since(since)
 
     def via_mailapp() -> None:
+        operator = gmail_query_operator(query)
+        if operator:
+            # Refused rather than run: Mail.app matches it as a literal and returns nothing.
+            raise click.ClickException(
+                f"{query!r} uses Gmail syntax ({operator}), which Mail.app cannot run. Gmail is unavailable for {name}: "
+                f"run `email auth login -a {name}`. Meanwhile use `email list <mailbox> --since <date> -a {name}` "
+                f"or a plain substring with --mailbox and --in subject|from|body.")
         if not mailbox:
             raise click.ClickException("Mail.app search needs --mailbox (e.g. INBOX or Immo/Poncelet)")
         kwargs = {"subject": query} if field == "subject" else {"sender": query} if field == "from" else {"content": query}
