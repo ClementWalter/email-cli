@@ -27,8 +27,9 @@ account name. Each command takes `--account` and `--backend auto|gmail|mailapp`:
             search fall back to mailapp; send never does (a timed-out send may
             have gone through).
 
-Commands: accounts, mailboxes, list, search, read, attachments, send (dry run
-unless --yes). Every read supports --json; message ids are the backend's own
+Commands: accounts, mailboxes, list, search, read, attachments, send, reply, and
+the Gmail-only drafts, draft-show, draft-update, draft-delete. send, reply,
+draft-update and draft-delete are dry runs unless --yes. Every read supports --json; message ids are the backend's own
 (Gmail id, or Mail.app "<account>:<mailbox>:<id>"), stable for the caller.
 """
 
@@ -39,14 +40,12 @@ import datetime as dt
 import html
 import json
 import logging
-import os
 import pathlib
 import re
 import subprocess
 import sys
 import unicodedata
 from email.message import EmailMessage
-from email.utils import parsedate_to_datetime
 
 import click
 
@@ -447,6 +446,67 @@ def gmail_draft(svc, msg: EmailMessage, thread_id: str | None = None) -> str:
     return svc.users().drafts().create(userId="me", body={"message": message}).execute()["id"]
 
 
+def gmail_draft_read(svc, account: str, draft_id: str) -> dict:
+    """One draft as a `read`-shaped dict plus the headers an update must carry over."""
+    draft = svc.users().drafts().get(userId="me", id=draft_id, format="full").execute()
+    msg = draft["message"]
+    body, attachments = gmail_body(msg.get("payload", {}))
+    out = item("gmail", account, draft["id"], int(msg.get("internalDate", 0)) // 1000 or None, header(msg, "From"), header(msg, "To"), header(msg, "Subject"), html.unescape(msg.get("snippet", "")))
+    out.update(draft_id=draft["id"], message_id=msg["id"], thread_id=msg.get("threadId"), cc=header(msg, "Cc"), bcc=header(msg, "Bcc"),
+               in_reply_to=header(msg, "In-Reply-To"), references=header(msg, "References"), body=body, attachments=attachments)
+    return out
+
+
+def gmail_drafts(svc, account: str, query: str | None, limit: int) -> list[dict]:
+    """Drafts matching a Gmail query, newest first (Gmail's own order)."""
+    params = {"userId": "me", "maxResults": min(limit, 500)}
+    if query:
+        params["q"] = query
+    refs = svc.users().drafts().list(**params).execute().get("drafts", [])
+    return [gmail_draft_read(svc, account, ref["id"]) for ref in refs[:limit]]
+
+
+def gmail_attachment_bytes(svc, message_id: str, att: dict) -> bytes:
+    """Large parts are fetched by attachmentId; small ones carry their data inline in the part."""
+    if att.get("attachmentId"):
+        data = svc.users().messages().attachments().get(userId="me", messageId=message_id, id=att["attachmentId"]).execute()["data"]
+        return base64.urlsafe_b64decode(data)
+    stack = [svc.users().messages().get(userId="me", id=message_id, format="full").execute()["payload"]]
+    while stack:
+        part = stack.pop()
+        if part.get("filename") == att["filename"] and part.get("body", {}).get("data"):
+            return base64.urlsafe_b64decode(part["body"]["data"])
+        stack.extend(part.get("parts", []))
+    raise click.ClickException(f"attachment {att['filename']!r} of draft message {message_id} has no data")
+
+
+def draft_message(draft: dict, sender: str, to: str, cc: str | None, subject: str, body: str, attachments: list[pathlib.Path], kept: list[tuple[dict, bytes]]) -> EmailMessage:
+    """Rebuild a draft's MIME message; Bcc and reply headers are copied so it stays the same reply."""
+    msg = build_message(sender, to, subject, body, cc, attachments)
+    if draft.get("bcc"):
+        msg["Bcc"] = draft["bcc"]
+    if draft.get("in_reply_to"):
+        msg["In-Reply-To"] = draft["in_reply_to"]
+    if draft.get("references"):
+        msg["References"] = draft["references"]
+    for att, data in kept:
+        maintype, subtype = (att.get("mimeType") or "application/octet-stream").split("/", 1)
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=att["filename"])
+    return msg
+
+
+def gmail_draft_update(svc, draft_id: str, msg: EmailMessage, thread_id: str | None) -> str:
+    """Replace a draft's message in place; threadId keeps it a reply in its thread."""
+    message = {"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode()}
+    if thread_id:
+        message["threadId"] = thread_id
+    return svc.users().drafts().update(userId="me", id=draft_id, body={"id": draft_id, "message": message}).execute()["id"]
+
+
+def gmail_draft_delete(svc, draft_id: str) -> None:
+    svc.users().drafts().delete(userId="me", id=draft_id).execute()
+
+
 # --- mailapp backend (JavaScript for Automation) -------------------------------
 
 # Each account names its sent folder in its own locale; first hit wins, so the
@@ -668,7 +728,7 @@ def auth() -> None:
 def auth_login(account: str | None) -> None:
     """Consent once in the browser; the token is saved under ~/.config/email-cli/accounts/<name>/."""
     name, acc = account_config(account)
-    creds = gmail_credentials(name, interactive=True, login_hint=acc.get("address") or None)
+    gmail_credentials(name, interactive=True, login_hint=acc.get("address") or None)
     click.echo(f"token saved for {name} ({acc.get('address')}) → {token_path(name)}")
 
 
@@ -900,6 +960,118 @@ def reply(msg_id: str, body: str | None, file_: pathlib.Path | None, to: str | N
         acc_name, mailbox, raw_id = msg_id.split(":", 2)
         mailapp_reply(acc_name, mailbox, raw_id, text, rcc, list(attach))
         click.echo("sent via Mail.app")
+
+
+# --- Gmail drafts ----------------------------------------------------------------
+
+def drafts_service(backend: str, name: str, acc: dict):
+    """Drafts live only behind the Gmail API: Mail.app exposes no scriptable draft store."""
+    if resolve_backend(backend, name, acc) != "gmail":
+        raise click.ClickException(f"draft commands need the gmail backend; account {name!r} has no Gmail token (run `email auth login -a {name}`)")
+    return gmail_service(name)
+
+
+def draft_summary(draft: dict) -> dict:
+    """The listing shape of a draft: no body, attachment metadata only."""
+    keys = ("draft_id", "message_id", "thread_id", "account", "ts", "from", "to", "cc", "bcc", "subject", "snippet", "in_reply_to")
+    out = {k: draft.get(k) for k in keys}
+    out["attachments"] = [{"filename": a["filename"], "mimeType": a.get("mimeType"), "size": a.get("size")} for a in draft["attachments"]]
+    return out
+
+
+def fmt_ts(ts: int | None) -> str:
+    return dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else " " * 16
+
+
+@cli.command()
+@click.option("-q", "--query", default=None, help="Gmail query to filter drafts (e.g. 'to:alice subject:devis')")
+@click.option("--limit", default=30, show_default=True)
+@account_option
+@backend_option
+@json_option
+def drafts(query: str | None, limit: int, account: str | None, backend: str, as_json: bool) -> None:
+    """List Gmail drafts: id, thread, recipients, subject, date, attachments."""
+    name, acc = account_config(account)
+    rows = [draft_summary(d) for d in gmail_drafts(drafts_service(backend, name, acc), name, query, limit)]
+    if as_json:
+        click.echo(json.dumps(rows, ensure_ascii=False, indent=2))
+        return
+    for r in rows:
+        atts = r["attachments"]
+        att = f"  [{len(atts)} att: {', '.join(a['filename'] for a in atts)}]" if atts else ""
+        click.echo(f"{fmt_ts(r['ts'])}  {r['draft_id']:<22} thread={r['thread_id'] or '-':<17} {(r['to'] or '-')[:32]:<32} {r['subject'][:60]}{att}")
+
+
+@cli.command("draft-show")
+@click.argument("draft_id")
+@account_option
+@backend_option
+@json_option
+def draft_show(draft_id: str, account: str | None, backend: str, as_json: bool) -> None:
+    """Print one Gmail draft: headers, plain-text body, attachments."""
+    name, acc = account_config(account)
+    d = gmail_draft_read(drafts_service(backend, name, acc), name, draft_id)
+    if as_json:
+        click.echo(json.dumps(d, ensure_ascii=False, indent=2))
+        return
+    click.echo(f"Draft:   {d['draft_id']} (message {d['message_id']}, thread {d['thread_id']})\nFrom:    {d['from']}\nTo:      {d['to']}\nCc:      {d['cc']}\n"
+               f"Bcc:     {d['bcc']}\nDate:    {fmt_ts(d['ts']).strip()}\nSubject: {d['subject']}\nReply-to-message: {d['in_reply_to'] or '-'}\n")
+    click.echo(d["body"])
+    if d["attachments"]:
+        click.echo("\nAttachments: " + ", ".join(f"{a['filename']} ({a.get('size')} B)" for a in d["attachments"]))
+
+
+@cli.command("draft-update")
+@click.argument("draft_id")
+@click.option("--body", default=None, help="new text body (default: keep the draft's current body)")
+@file_option
+@click.option("--subject", default=None, help="new subject (default: keep)")
+@click.option("--to", default=None, help="new To (default: keep)")
+@click.option("--cc", default=None, help="new Cc (default: keep; '' clears it)")
+@click.option("--attach", multiple=True, type=click.Path(exists=True, dir_okay=False, path_type=pathlib.Path), help="attach a file (repeatable)")
+@click.option("--keep-attachments", is_flag=True, help="retain the draft's current attachments; without it they are dropped")
+@click.option("--yes", is_flag=True, help="actually update; without it the new draft is only shown")
+@account_option
+@backend_option
+def draft_update(draft_id: str, body: str | None, file_: pathlib.Path | None, subject: str | None, to: str | None, cc: str | None,
+                 attach: tuple[pathlib.Path, ...], keep_attachments: bool, yes: bool, account: str | None, backend: str) -> None:
+    """Rewrite a Gmail draft in place, keeping its thread and reply headers. Dry run unless --yes."""
+    name, acc = account_config(account)
+    svc = drafts_service(backend, name, acc)
+    d = gmail_draft_read(svc, name, draft_id)
+    # The draft's own body is the default, so stdin is never read implicitly here.
+    text = resolve_body(body, file_) if body is not None or file_ is not None else d["body"]
+    sender = d["from"] or acc.get("address") or ""
+    rcpt, subj = to if to is not None else d["to"], subject if subject is not None else d["subject"]
+    rcc = (cc if cc is not None else d["cc"]) or None
+    kept = d["attachments"] if keep_attachments else []
+    dropped = [] if keep_attachments else d["attachments"]
+    click.echo(f"[{'UPDATE' if yes else 'dry run'}] draft {draft_id} via gmail as {sender}\n  to: {rcpt or '-'}\n  cc: {rcc or '-'}\n  subject: {subj}\n"
+               f"  thread: {d['thread_id']}\n  in-reply-to: {d['in_reply_to'] or '-'}\n"
+               f"  attachments kept: {', '.join(a['filename'] for a in kept) or '-'}\n  attachments added: {', '.join(p.name for p in attach) or '-'}\n"
+               f"  attachments dropped: {', '.join(a['filename'] for a in dropped) or '-'}\n\n{text}", err=not yes)
+    if not yes:
+        return
+    kept_data = [(a, gmail_attachment_bytes(svc, d["message_id"], a)) for a in kept]
+    msg = draft_message(d, sender, rcpt, rcc, subj, text, list(attach), kept_data)
+    click.echo(f"draft: {gmail_draft_update(svc, draft_id, msg, d['thread_id'])}")
+
+
+@cli.command("draft-delete")
+@click.argument("draft_ids", nargs=-1, required=True)
+@click.option("--yes", is_flag=True, help="actually delete; without it the drafts are only shown")
+@account_option
+@backend_option
+def draft_delete(draft_ids: tuple[str, ...], yes: bool, account: str | None, backend: str) -> None:
+    """Delete Gmail drafts permanently (not moved to trash). Dry run unless --yes."""
+    name, acc = account_config(account)
+    svc = drafts_service(backend, name, acc)
+    for draft_id in draft_ids:
+        d = gmail_draft_read(svc, name, draft_id)
+        click.echo(f"[{'DELETE' if yes else 'dry run'}] draft {draft_id}  to: {d['to'] or '-'}  subject: {d['subject']}", err=not yes)
+        if yes:
+            gmail_draft_delete(svc, draft_id)
+            click.echo(f"deleted: {draft_id}")
 
 
 # Provider commands share the same execution policy as the app and MCP.

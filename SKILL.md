@@ -1,6 +1,6 @@
 ---
 name: email-cli
-description: Read, search and send the user's email from the terminal via the bundled `email` command, the same commands on every machine. Two backends behind one CLI - the Gmail API with a per-account OAuth token (works from any machine, fast search with Gmail query syntax) and macOS Mail.app over JavaScript for Automation (covers iCloud/Outlook/IMAP accounts, macOS only). Accounts are names (`default` = personal Google, `zama`, `kakarot`, `icloud`, `outlook`); `--backend auto` picks Gmail when a token exists, else Mail.app. Commands - `email accounts`, `email mailboxes`, `email list <mailbox>`, `email search "<query>"`, `email read <id>`, `email attachments <id> --out DIR`, `email send <to> --subject ... --yes`, `email reply <id> --yes` (threaded reply; `--draft` saves it as a Gmail draft in the thread instead). `send`/`reply` take `--file <draft.md>` instead of `--body` to reflow a hard-wrapped Markdown draft into normal email paragraphs. Every read supports --json. Use when the user wants to read, find, or answer email, save an attachment, or a heartbeat needs a mailbox as data.
+description: Read, search and send the user's email from the terminal via the bundled `email` command, the same commands on every machine. Two backends behind one CLI - the Gmail API with a per-account OAuth token (works from any machine, fast search with Gmail query syntax) and macOS Mail.app over JavaScript for Automation (covers iCloud/Outlook/IMAP accounts, macOS only). Accounts are names (`default` = personal Google, `zama`, `kakarot`, `icloud`, `outlook`); `--backend auto` picks Gmail when a token exists, else Mail.app. Commands - `email accounts`, `email mailboxes`, `email list <mailbox>`, `email search "<query>"`, `email read <id>`, `email attachments <id> --out DIR`, `email send <to> --subject ... --yes`, `email reply <id> --yes` (threaded reply; `--draft` saves it as a Gmail draft in the thread instead), and Gmail drafts - `email drafts [-q QUERY]`, `email draft-show <draft_id>`, `email draft-update <draft_id> --file draft.md --yes` (keeps thread and reply headers), `email draft-delete <draft_id>... --yes`. `send`/`reply` take `--file <draft.md>` instead of `--body` to reflow a hard-wrapped Markdown draft into normal email paragraphs. Every read supports --json. Use when the user wants to read, find, or answer email, save an attachment, or a heartbeat needs a mailbox as data.
 ---
 
 # email-cli
@@ -9,7 +9,7 @@ description: Read, search and send the user's email from the terminal via the bu
 
 `email` is on PATH (linked by claudine's `link_clis.py`); otherwise `bin/email`
 from this repo. Every command has `-h`. Reads default to text; add `--json` for
-scripts. `send` is a dry run unless `--yes`.
+scripts. `send`, `reply`, `draft-update` and `draft-delete` are dry runs unless `--yes`.
 
 ```bash
 email accounts                                        # names, addresses, which backend each gets here
@@ -26,11 +26,34 @@ email send alice@example.com --subject "..." --body "..." -a default --yes
 email send alice@example.com --subject "..." --file draft.md -a default --yes    # reflows a hard-wrapped Markdown draft into normal paragraphs before sending
 email reply 18f3a2b9c0d1e2f3 --file draft.md -a default --yes        # threaded reply: reuses To/Cc/Subject, sets In-Reply-To/References and Gmail threadId from the original
 email reply 18f3a2b9c0d1e2f3 --file draft.md --attach pv.pdf -a default --draft  # same threading, saved as a Gmail draft to review and send from Gmail
+email drafts -a default                                # Gmail drafts: date, draft id, thread, To, subject, attachments
+email drafts -a default -q "to:alice" --json     # filter with Gmail query syntax
+email draft-show r-1234567890 -a default               # headers, body, attachments of one draft
+email draft-update r-1234567890 --file draft.md -a default --keep-attachments --yes   # new body, same thread
+email draft-update r-1234567890 --subject "Re: devis v2" --attach pv.pdf -a default --yes
+email draft-delete r-1234567890 r-0987654321 -a default --yes
 ```
 
 `--file` is for the case that bit us once: a Markdown draft wrapped at ~78 chars for readability, sent verbatim, lands with line breaks in the middle of sentences. `--file` joins each paragraph back onto one line (headings/list items/blockquotes keep their own line) before sending; `--body`/stdin are sent as-is, so compose those already unwrapped.
 
 `reply` only works from the message being answered, not from a bare `--body`/`--to`: on Gmail it fetches the original's Message-ID/References/threadId and sets them on the outgoing message; on Mail.app it hands off to Mail's own `reply` command, so `--to`/`--subject` are not accepted for that backend (Mail.app already sets them from the original).
+
+## Drafts (Gmail only)
+
+`drafts` lists, `draft-show` prints one, `draft-update` rewrites one in place,
+`draft-delete` removes one or more permanently (not via Trash). Draft ids are
+Gmail's draft ids (`r-...`), not message ids: take them from `email drafts`
+(or from `email reply --draft`, which prints the id it creates).
+
+`draft-update` keeps whatever it is not told to change: To/Cc/Subject/From/Bcc,
+the body (when neither `--body` nor `--file` is given; stdin is never read),
+and the thread, since the Gmail threadId and the In-Reply-To/References
+headers are copied over, so a reply draft stays a reply. Attachments are the
+exception: the existing ones are dropped unless `--keep-attachments` is
+passed; the dry run lists kept, added and dropped files, so read it first.
+The body is rewritten as plain text, so an HTML draft composed in Gmail loses
+its formatting once updated. Mail.app accounts get a clear error: Mail.app has
+no scriptable draft store.
 
 ## Accounts and backends
 
