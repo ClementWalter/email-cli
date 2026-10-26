@@ -16,7 +16,8 @@ account name. Each command takes `--account` and `--backend auto|gmail|mailapp`:
 
   gmail     Google's REST API with an OAuth token stored per account under
             ~/.config/email-cli/accounts/<name>/token.json (the OAuth client is
-            the one gdrive-cli already uses). Works from any machine, searches
+            the one gdrive-cli already uses). `email auth login` asks for read
+            access (gmail.readonly: no send, no draft writes) or write access. Works from any machine, searches
             with Gmail's query syntax, fast on large mailboxes.
   mailapp   macOS Mail.app driven over JavaScript for Automation. Covers the
             accounts Gmail cannot (iCloud, Outlook, IMAP) but only on a Mac
@@ -56,7 +57,9 @@ import email_auth_store as auth_store
 CONFIG_DIR = pathlib.Path.home() / ".config" / "email-cli"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 GDRIVE_ACCOUNTS = pathlib.Path.home() / ".config" / "gdrive-cli" / "accounts"
-GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/gmail.compose"]
+GMAIL_WRITE_SCOPES = ["https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/gmail.compose"]
+# Chosen at `email auth login`: a read token is refused by Google itself on send and draft writes.
+GMAIL_ACCESS_SCOPES = {"read": ["https://www.googleapis.com/auth/gmail.readonly"], "write": GMAIL_WRITE_SCOPES}
 IS_MACOS = sys.platform == "darwin"
 BACKENDS = ("auto", "gmail", "mailapp")
 
@@ -221,36 +224,57 @@ def reply_references(orig_references: str, orig_message_id: str) -> str:
 
 # --- gmail backend -------------------------------------------------------------
 
-def gmail_credentials(account: str, interactive: bool = False, login_hint: str | None = None):
+def gmail_credentials(account: str):
     from google.auth.exceptions import RefreshError
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
 
     path = token_path(account)
     auth_store.restore(path, "email", account)
-    creds = Credentials.from_authorized_user_file(str(path), GMAIL_SCOPES) if path.exists() else None
+    # The token's own scopes: a read token refreshed under write scopes would be refused.
+    creds = Credentials.from_authorized_user_file(str(path)) if path.exists() else None
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
             save_token(creds, account)
         except RefreshError as exc:
-            # A revoked or expired grant cannot be refreshed again: drop the dead token so
-            # the interactive flow re-consents instead of raising Google's traceback.
+            # A revoked or expired grant cannot be refreshed again: report a re-login
+            # instead of raising Google's traceback.
             log.warning("stored Gmail grant for %s is dead (%s); consent again", account, exc)
             creds = None
     if creds and creds.valid:
         return creds
-    if not interactive:
-        raise click.ClickException(f"account {account!r} has no valid Gmail token; connect Email in Brain or use email auth login --account {account}")
+    raise click.ClickException(f"account {account!r} has no valid Gmail token; connect Email in Brain or use email auth login --account {account}")
+
+
+def gmail_consent(account: str, access: str, login_hint: str | None = None):
+    """Browser consent for exactly the scopes of `access`, replacing any stored token."""
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     secret = client_secret_path(account)
     if secret is None:
         raise click.ClickException("no client_secret.json found (email-cli or gdrive-cli config)")
-    flow = InstalledAppFlow.from_client_secrets_file(str(secret), GMAIL_SCOPES)
+    flow = InstalledAppFlow.from_client_secrets_file(str(secret), GMAIL_ACCESS_SCOPES[access])
     creds = flow.run_local_server(port=0, **({"login_hint": login_hint} if login_hint else {}))
     save_token(creds, account)
     return creds
+
+
+def gmail_access(account: str) -> str | None:
+    """`read` or `write` from the stored token's scopes; None without a token."""
+    path = token_path(account)
+    if not path.exists():
+        return None
+    scopes = json.loads(path.read_text()).get("scopes")
+    # Tokens saved before access levels existed carry the write scopes or none at all.
+    return "write" if not scopes or set(GMAIL_WRITE_SCOPES) & set(scopes) else "read"
+
+
+def require_gmail_write(account: str) -> None:
+    """Refuse before any request: Google would reject it with a bare 403."""
+    if gmail_access(account) == "read":
+        raise click.ClickException(f"account {account!r} is read-only: its Gmail token cannot send or change drafts "
+                                   f"(`email auth login -a {account} --access write` grants write access)")
 
 
 def save_token(creds, account: str) -> None:
@@ -708,12 +732,13 @@ def accounts(as_json: bool) -> None:
     rows = []
     for name, acc in cfg["accounts"].items():
         rows.append({"name": name, "address": acc.get("address", ""), "mailapp": acc.get("mailapp", ""), "gmail_token": token_path(name).exists(),
+                     "gmail_access": gmail_access(name),
                      "gmail_hosted": is_gmail_hosted(acc, servers), "default": name == cfg.get("default_account")})
     if as_json:
         click.echo(json.dumps(rows, indent=2))
         return
     for r in rows:
-        backend = "gmail" if r["gmail_token"] else ("mailapp" if IS_MACOS and r["mailapp"] else "-")
+        backend = f"gmail ({r['gmail_access']})" if r["gmail_token"] else ("mailapp" if IS_MACOS and r["mailapp"] else "-")
         hint = f"  (Google account: email auth login -a {r['name']})" if r["gmail_hosted"] and not r["gmail_token"] else ""
         click.echo(f"{'*' if r['default'] else ' '} {r['name']:<10} {r['address']:<30} mailapp={r['mailapp'] or '-':<10} → {backend}{hint}")
 
@@ -725,11 +750,13 @@ def auth() -> None:
 
 @auth.command("login")
 @account_option
-def auth_login(account: str | None) -> None:
-    """Consent once in the browser; the token is saved under ~/.config/email-cli/accounts/<name>/."""
+@click.option("--access", type=click.Choice(sorted(GMAIL_ACCESS_SCOPES)), prompt="Access (read: read-only, no send or drafts; write: read, send, drafts)",
+              help="read grants gmail.readonly only; write grants gmail.modify + gmail.compose (send, drafts)")
+def auth_login(account: str | None, access: str) -> None:
+    """Consent in the browser for read or write access; the token is saved under ~/.config/email-cli/accounts/<name>/."""
     name, acc = account_config(account)
-    gmail_credentials(name, interactive=True, login_hint=acc.get("address") or None)
-    click.echo(f"token saved for {name} ({acc.get('address')}) → {token_path(name)}")
+    gmail_consent(name, access, login_hint=acc.get("address") or None)
+    click.echo(f"{access} token saved for {name} ({acc.get('address')}) → {token_path(name)}")
 
 
 @auth.command("status")
@@ -896,6 +923,8 @@ def send(to: str, subject: str, body: str | None, file_: pathlib.Path | None, cc
     """Send a plain-text email from an account. Dry run unless --yes."""
     name, acc = account_config(account)
     backend = resolve_backend(backend, name, acc)
+    if backend == "gmail":
+        require_gmail_write(name)
     text = resolve_body(body, file_)
     sender = acc.get("address") or ""
     click.echo(f"[{'SEND' if yes else 'dry run'}] via {backend} as {sender}\n  to: {to}\n  cc: {cc or '-'}\n  subject: {subject}\n  attachments: {', '.join(p.name for p in attach) or '-'}\n\n{text}", err=not yes)
@@ -932,6 +961,7 @@ def reply(msg_id: str, body: str | None, file_: pathlib.Path | None, to: str | N
     if draft and yes:
         raise click.ClickException("--draft and --yes are exclusive: a draft is never sent")
     if backend == "gmail":
+        require_gmail_write(name)
         svc = gmail_service(name)
         orig = gmail_read(svc, name, msg_id)
         subj = subject or reply_subject(orig["subject"])
@@ -1038,6 +1068,7 @@ def draft_update(draft_id: str, body: str | None, file_: pathlib.Path | None, su
     """Rewrite a Gmail draft in place, keeping its thread and reply headers. Dry run unless --yes."""
     name, acc = account_config(account)
     svc = drafts_service(backend, name, acc)
+    require_gmail_write(name)
     d = gmail_draft_read(svc, name, draft_id)
     # The draft's own body is the default, so stdin is never read implicitly here.
     text = resolve_body(body, file_) if body is not None or file_ is not None else d["body"]
@@ -1066,6 +1097,7 @@ def draft_delete(draft_ids: tuple[str, ...], yes: bool, account: str | None, bac
     """Delete Gmail drafts permanently (not moved to trash). Dry run unless --yes."""
     name, acc = account_config(account)
     svc = drafts_service(backend, name, acc)
+    require_gmail_write(name)
     for draft_id in draft_ids:
         d = gmail_draft_read(svc, name, draft_id)
         click.echo(f"[{'DELETE' if yes else 'dry run'}] draft {draft_id}  to: {d['to'] or '-'}  subject: {d['subject']}", err=not yes)

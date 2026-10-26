@@ -81,8 +81,12 @@ preference**: it is about 30x faster on searches and sees messages Mail.app has
 not synced. Do not force `--backend mailapp` on a Google account; if one has no
 token yet, run `email auth login -a <name>` once instead. Mail.app is for the
 accounts Gmail cannot serve (iCloud, Outlook, IMAP). The Gmail token reuses gdrive-cli's OAuth client
-(`client_secret.json`) with the `gmail.modify` and `gmail.compose` scopes; it is
-a Document in the 1Password vault `Claudine` so a box restores it without a
+(`client_secret.json`). `email auth login` asks for an access level (or takes
+`--access read|write`): `read` grants `gmail.readonly` only, so Google refuses
+any send or draft write and `send`, `reply` and `draft-update`/`draft-delete`
+stop with a "read-only" error; `write` grants `gmail.modify` and
+`gmail.compose`. `email accounts` shows each token's level. The token is a
+Document in the 1Password vault `Claudine` so a box restores it without a
 browser.
 
 ## Dead Gmail token in an unattended run

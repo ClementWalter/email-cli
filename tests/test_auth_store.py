@@ -171,7 +171,7 @@ def test_revoked_grant_reports_relogin_instead_of_traceback(revoked_token):
         cli.gmail_credentials("work")
 
 
-def test_revoked_grant_triggers_consent_when_interactive(revoked_token, monkeypatch):
+def test_consent_passes_login_hint(revoked_token, monkeypatch):
     consented = []
     class Fresh:
         def to_json(self):
@@ -185,5 +185,5 @@ def test_revoked_grant_triggers_consent_when_interactive(revoked_token, monkeypa
             return Fresh()
     monkeypatch.setattr(cli, "client_secret_path", lambda account: revoked_token / "client_secret.json")
     monkeypatch.setitem(sys.modules, "google_auth_oauthlib.flow", SimpleNamespace(InstalledAppFlow=Flow))
-    cli.gmail_credentials("work", interactive=True, login_hint="work@example.test")
+    cli.gmail_consent("work", "write", login_hint="work@example.test")
     assert consented == [{"port": 0, "login_hint": "work@example.test"}]
