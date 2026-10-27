@@ -1,6 +1,20 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "click==8.3.3",
+#     "google-api-python-client==2.201.0",
+#     "google-auth-httplib2==0.4.4",
+#     "google-auth-oauthlib==1.5.0",
+#     "pytest==9.1.1",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
+# ///
 """Gmail draft management (drafts, draft-show, draft-update, draft-delete) against a stubbed Gmail service.
 
-Run from the repo root: PYTHONPATH=. uv run --with pytest --with click --with google-api-python-client --with google-auth-oauthlib pytest -q tests/test_drafts.py
+Run: uv run --script tests/test_drafts.py
 """
 
 from __future__ import annotations
@@ -8,12 +22,16 @@ from __future__ import annotations
 import base64
 import email
 import json
+import sys
+from pathlib import Path
 from email import policy
 
 import click
 import pytest
 from click.testing import CliRunner
 
+# The modules under test sit at the repo root, one level above tests/.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import email_cli as ec
 
 
@@ -105,12 +123,6 @@ def draft_resource(draft_id: str = "r-1", message_id: str = "m1", thread_id: str
     parts += attachment_parts if attachment_parts is not None else [{"mimeType": "application/pdf", "filename": "devis.pdf", "body": {"attachmentId": "A1", "size": 3}}]
     return {"id": draft_id, "message": {"id": message_id, "threadId": thread_id, "internalDate": "1788000000000", "snippet": "Old body",
                                         "payload": {"mimeType": "multipart/mixed", "headers": headers, "parts": parts}}}
-
-
-@pytest.fixture(autouse=True)
-def no_onebrain_policy(tmp_path, monkeypatch):
-    """Point the OneBrain guard at an empty directory so write commands are not blocked by the host's policy."""
-    monkeypatch.setenv("BRAIN_SUPPORT", str(tmp_path / "brain"))
 
 
 @pytest.fixture
@@ -333,3 +345,6 @@ def test_draft_commands_refuse_mailapp(cli_stub, monkeypatch):
     monkeypatch.setattr(ec, "resolve_backend", lambda *a, **k: "mailapp")
     result = CliRunner().invoke(ec.cli, ["drafts", "--backend", "mailapp"])
     assert "draft commands need the gmail backend" in result.output
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, *sys.argv[1:]]))

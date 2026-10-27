@@ -1,6 +1,20 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "click==8.3.3",
+#     "google-api-python-client==2.201.0",
+#     "google-auth-httplib2==0.4.4",
+#     "google-auth-oauthlib==1.5.0",
+#     "pytest==9.1.1",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
+# ///
 """Pure helpers of email-cli and the Mail.app query builder, with osascript stubbed.
 
-Run from the repo root: PYTHONPATH=. uv run --with pytest --with click --with google-api-python-client --with google-auth-oauthlib pytest -q tests
+Run: uv run --script tests/test_email_cli.py
 """
 
 from __future__ import annotations
@@ -8,11 +22,15 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import json
+import sys
+from pathlib import Path
 
 import click
 import pytest
 from click.testing import CliRunner
 
+# The modules under test sit at the repo root, one level above tests/.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import email_cli as ec
 
 
@@ -468,3 +486,6 @@ def test_mailapp_servers_refresh_writes_the_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(ec, "jxa", lambda *a, **k: {"Zama": "imap.gmail.com"})
     ec.mailapp_servers(refresh=True)
     assert json.loads(cache.read_text()) == {"Zama": "imap.gmail.com"}
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, *sys.argv[1:]]))

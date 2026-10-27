@@ -2,15 +2,18 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "click>=8.1",
-#     "google-api-python-client",
-#     "google-auth-httplib2",
-#     "google-auth-oauthlib",
+#     "click==8.3.3",
+#     "google-api-python-client==2.201.0",
+#     "google-auth-httplib2==0.4.4",
+#     "google-auth-oauthlib==1.5.0",
 # ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
 # ///
 """One email CLI for every machine: Gmail API where a token exists, Mail.app where macOS is.
 
-Accounts are names (`default`, `zama`, `icloud`...) mapped in
+Accounts are names (`default`, `work`, `icloud`...) mapped in
 ~/.config/email-cli/config.json to an address and, where relevant, the Mail.app
 account name. Each command takes `--account` and `--backend auto|gmail|mailapp`:
 
@@ -244,7 +247,7 @@ def gmail_credentials(account: str):
             creds = None
     if creds and creds.valid:
         return creds
-    raise click.ClickException(f"account {account!r} has no valid Gmail token; connect Email in Brain or use email auth login --account {account}")
+    raise click.ClickException(f"account {account!r} has no valid Gmail token; run `email auth login --account {account}`")
 
 
 def gmail_consent(account: str, access: str, login_hint: str | None = None):
@@ -699,7 +702,7 @@ backend_option = click.option("--backend", default="auto", type=click.Choice(BAC
 json_option = click.option("--json", "as_json", is_flag=True)
 
 
-@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+@click.group(context_settings={"help_option_names": ["-h", "--help"]}, epilog="\b\nExamples:\n  email accounts\n  email search \"from:alice newer_than:30d\" -a default --json\n  email read 18f3a2b9c0d1e2f3 -a default")
 @click.option("-v", "--verbose", is_flag=True)
 def cli(verbose: bool) -> None:
     """Read and send email through Gmail's API or macOS Mail.app, same commands everywhere."""
@@ -723,7 +726,7 @@ def main() -> None:
         raise
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  email accounts\n  email accounts --json")
 @json_option
 def accounts(as_json: bool) -> None:
     """List configured accounts and which backend each would use here."""
@@ -743,12 +746,12 @@ def accounts(as_json: bool) -> None:
         click.echo(f"{'*' if r['default'] else ' '} {r['name']:<10} {r['address']:<30} mailapp={r['mailapp'] or '-':<10} → {backend}{hint}")
 
 
-@cli.group()
+@cli.group(epilog="\b\nExamples:\n  email auth login -a default --access read\n  email auth status -a default --json")
 def auth() -> None:
     """Gmail OAuth tokens."""
 
 
-@auth.command("login")
+@auth.command("login", epilog="\b\nExamples:\n  email auth login -a default --access read\n  email auth login -a work --access write")
 @account_option
 @click.option("--access", type=click.Choice(sorted(GMAIL_ACCESS_SCOPES)), prompt="Access (read: read-only, no send or drafts; write: read, send, drafts)",
               help="read grants gmail.readonly only; write grants gmail.modify + gmail.compose (send, drafts)")
@@ -759,7 +762,7 @@ def auth_login(account: str | None, access: str) -> None:
     click.echo(f"{access} token saved for {name} ({acc.get('address')}) → {token_path(name)}")
 
 
-@auth.command("status")
+@auth.command("status", epilog="\b\nExamples:\n  email auth status -a default\n  email auth-status -a default --json")
 @account_option
 @json_option
 def auth_status(account: str | None, as_json: bool) -> None:
@@ -769,7 +772,7 @@ def auth_status(account: str | None, as_json: bool) -> None:
     click.echo(json.dumps(result) if as_json else f"{name}: {result['source']}")
 
 
-@auth.command("sync")
+@auth.command("sync", epilog="\b\nExamples:\n  email auth sync -a default\n  email auth-sync -a default --json")
 @account_option
 @json_option
 def auth_sync(account: str | None, as_json: bool) -> None:
@@ -785,7 +788,7 @@ cli.add_command(auth_status, "auth-status")
 cli.add_command(auth_sync, "auth-sync")
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  email mailboxes -a default\n  email mailboxes -a icloud --backend mailapp --json")
 @account_option
 @backend_option
 @json_option
@@ -806,7 +809,7 @@ def mailboxes(account: str | None, backend: str, as_json: bool) -> None:
                 mailapp=lambda: show(mailapp_mailboxes(acc["mailapp"])))
 
 
-@cli.command("list")
+@cli.command("list", epilog="\b\nExamples:\n  email list INBOX -a default --since 2026-10-01 --limit 20\n  email list sent -a work --since 2026-10-01 --json")
 @click.argument("mailbox", default="INBOX")
 @click.option("--since", default=None, help="ISO date/datetime; only messages received at/after it")
 @click.option("--limit", default=30, show_default=True)
@@ -826,7 +829,7 @@ def list_cmd(mailbox: str, since: str | None, limit: int, account: str | None, b
                 mailapp=lambda: emit(mailapp_items(name, acc["mailapp"], mailbox, when, limit), as_json))
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  email search \"from:alice newer_than:90d\" -a default\n  email search \"invoice\" -a icloud --mailbox INBOX --in body --since 2026-09-01")
 @click.argument("query")
 @click.option("--mailbox", default=None, help="restrict to a mailbox/label (Mail.app: required; Gmail: optional)")
 @click.option("--since", default=None, help="ISO date; Mail.app searches are slow without it")
@@ -864,7 +867,7 @@ def search(query: str, mailbox: str | None, since: str | None, limit: int, field
     run_backend(backend, name, acc, gmail=lambda: emit(gmail_items(gmail_service(name), name, q, limit, mailbox), as_json), mailapp=via_mailapp)
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  email read 18f3a2b9c0d1e2f3 -a default\n  email read \"Google:INBOX:1234\" -a default --json")
 @click.argument("msg_id")
 @account_option
 @backend_option
@@ -884,7 +887,7 @@ def read(msg_id: str, account: str | None, backend: str, as_json: bool) -> None:
         click.echo("\nAttachments: " + ", ".join(a["filename"] for a in msg["attachments"]))
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  email attachments 18f3a2b9c0d1e2f3 -a default --out /tmp/attachments")
 @click.argument("msg_id")
 @click.option("--out", default=".", show_default=True)
 @account_option
@@ -909,7 +912,7 @@ def resolve_body(body: str | None, file_: pathlib.Path | None) -> str:
 file_option = click.option("--file", "file_", default=None, type=click.Path(exists=True, dir_okay=False, path_type=pathlib.Path), help="read the body from a Markdown draft file and reflow its hard-wrapped paragraphs into email-normal single lines (mutually exclusive with --body)")
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  email send alice@example.com --subject \"Hello\" --body \"Hi Alice\" -a default\n  email send alice@example.com --subject \"Quote\" --file draft.md --attach quote.pdf -a default --yes")
 @click.argument("to")
 @click.option("--subject", required=True)
 @click.option("--body", default=None, help="text body; reads stdin when omitted")
@@ -937,7 +940,7 @@ def send(to: str, subject: str, body: str | None, file_: pathlib.Path | None, cc
         click.echo("sent via Mail.app")
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  email reply 18f3a2b9c0d1e2f3 --file draft.md -a default\n  email reply 18f3a2b9c0d1e2f3 --file draft.md --attach quote.pdf -a default --draft")
 @click.argument("msg_id")
 @click.option("--body", default=None, help="text body; reads stdin when omitted")
 @file_option
@@ -1013,7 +1016,7 @@ def fmt_ts(ts: int | None) -> str:
     return dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else " " * 16
 
 
-@cli.command()
+@cli.command(epilog="\b\nExamples:\n  email drafts -a default\n  email drafts -a default -q \"to:alice\" --json")
 @click.option("-q", "--query", default=None, help="Gmail query to filter drafts (e.g. 'to:alice subject:devis')")
 @click.option("--limit", default=30, show_default=True)
 @account_option
@@ -1032,7 +1035,7 @@ def drafts(query: str | None, limit: int, account: str | None, backend: str, as_
         click.echo(f"{fmt_ts(r['ts'])}  {r['draft_id']:<22} thread={r['thread_id'] or '-':<17} {(r['to'] or '-')[:32]:<32} {r['subject'][:60]}{att}")
 
 
-@cli.command("draft-show")
+@cli.command("draft-show", epilog="\b\nExamples:\n  email draft-show r-1234567890 -a default\n  email draft-show r-1234567890 -a default --json")
 @click.argument("draft_id")
 @account_option
 @backend_option
@@ -1051,7 +1054,7 @@ def draft_show(draft_id: str, account: str | None, backend: str, as_json: bool) 
         click.echo("\nAttachments: " + ", ".join(f"{a['filename']} ({a.get('size')} B)" for a in d["attachments"]))
 
 
-@cli.command("draft-update")
+@cli.command("draft-update", epilog="\b\nExamples:\n  email draft-update r-1234567890 --file draft.md -a default --keep-attachments\n  email draft-update r-1234567890 --subject \"Re: quote v2\" --attach quote.pdf -a default --yes")
 @click.argument("draft_id")
 @click.option("--body", default=None, help="new text body (default: keep the draft's current body)")
 @file_option
@@ -1088,7 +1091,7 @@ def draft_update(draft_id: str, body: str | None, file_: pathlib.Path | None, su
     click.echo(f"draft: {gmail_draft_update(svc, draft_id, msg, d['thread_id'])}")
 
 
-@cli.command("draft-delete")
+@cli.command("draft-delete", epilog="\b\nExamples:\n  email draft-delete r-1234567890 r-0987654321 -a default\n  email draft-delete r-1234567890 -a default --yes")
 @click.argument("draft_ids", nargs=-1, required=True)
 @click.option("--yes", is_flag=True, help="actually delete; without it the drafts are only shown")
 @account_option
@@ -1105,15 +1108,6 @@ def draft_delete(draft_ids: tuple[str, ...], yes: bool, account: str | None, bac
             gmail_draft_delete(svc, draft_id)
             click.echo(f"deleted: {draft_id}")
 
-
-# Provider commands share the same execution policy as the app and MCP.
-import sys as _policy_sys
-from pathlib import Path as _PolicyPath
-
-_policy_sys.path.insert(0, str(_PolicyPath(__file__).resolve().parent))
-from onebrain_policy import install as _install_onebrain_policy
-
-_install_onebrain_policy(cli, 'email')
 
 if __name__ == "__main__":
     main()

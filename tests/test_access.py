@@ -1,18 +1,35 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "click==8.3.3",
+#     "google-api-python-client==2.201.0",
+#     "google-auth-httplib2==0.4.4",
+#     "google-auth-oauthlib==1.5.0",
+#     "pytest==9.1.1",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
+# ///
 """Gmail access levels: `email auth login --access read|write` and the read-only guard on write commands.
 
-Run from the repo root: PYTHONPATH=. uv run --with pytest --with click --with google-api-python-client --with google-auth-oauthlib pytest -q tests/test_access.py
+Run: uv run --script tests/test_access.py
 """
 
 from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import click
 import pytest
 from click.testing import CliRunner
 
+# The modules under test sit at the repo root, one level above tests/.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import email_cli as ec
 
 READONLY = "https://www.googleapis.com/auth/gmail.readonly"
@@ -117,3 +134,6 @@ def test_login_prompts_for_access(consent, monkeypatch):
 def test_login_access_option_skips_prompt(consent, monkeypatch):
     monkeypatch.setattr(ec, "account_config", lambda account: ("work", {"address": "me@work.test"}))
     assert "Access" not in run("auth", "login", "-a", "work", "--access", "write").output
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, *sys.argv[1:]]))

@@ -1,12 +1,29 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "click==8.3.3",
+#     "google-api-python-client==2.201.0",
+#     "google-auth-httplib2==0.4.4",
+#     "google-auth-oauthlib==1.5.0",
+#     "pytest==9.1.1",
+# ]
+#
+# [tool.uv]
+# exclude-newer = "2026-10-27T00:00:00Z"
+# ///
 """Credential broker integration without live vault or Google access."""
 
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 from click.testing import CliRunner
 import pytest
 
+# The modules under test sit at the repo root, one level above tests/.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import email_cli as cli
 import email_auth_store as store
 
@@ -187,3 +204,6 @@ def test_consent_passes_login_hint(revoked_token, monkeypatch):
     monkeypatch.setitem(sys.modules, "google_auth_oauthlib.flow", SimpleNamespace(InstalledAppFlow=Flow))
     cli.gmail_consent("work", "write", login_hint="work@example.test")
     assert consented == [{"port": 0, "login_hint": "work@example.test"}]
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, *sys.argv[1:]]))
