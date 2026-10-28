@@ -43,8 +43,8 @@ in Mail.app. Without that file no account is known and every command stops with
 - **Without a terminal (Claude Desktop extension):** `email google-setup` prints
   the one-time Google Cloud steps (own project, Gmail API, consent screen,
   Desktop app OAuth client) for Claude to walk the user through in Chrome, plus
-  what is configured here. The OAuth client comes from `GOOGLE_OAUTH_CLIENT_ID`
-  + `GOOGLE_OAUTH_CLIENT_SECRET` or `GOOGLE_OAUTH_CLIENT_FILE` (the extension's
+  what is configured here. The OAuth client comes from `GOOGLE_CLIENT_ID`
+  + `GOOGLE_CLIENT_SECRET` or `GOOGLE_CLIENT_FILE` (the extension's
   settings), `--client-file`, `~/.config/email-cli/client_secret.json`,
   gdrive-cli's, or the newest `client_secret_*.json` in Downloads (copied
   privately on `connect`). `email connect [-a NAME] [--access read|write]`

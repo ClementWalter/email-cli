@@ -48,5 +48,5 @@ account in through the browser from a detached helper and returns at once;
 `email connect-status` reports the outcome. `email connect --mailapp <name>`
 uses a Mail.app account instead. `mcpb.json` packs it as the "Email" Claude
 Desktop extension (`mcp-bridge pack email-cli --version X.Y.Z`), whose settings
-feed `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` or
-`GOOGLE_OAUTH_CLIENT_FILE`.
+feed `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` or
+`GOOGLE_CLIENT_FILE`.

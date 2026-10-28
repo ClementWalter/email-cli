@@ -69,7 +69,7 @@ GDRIVE_ACCOUNTS = pathlib.Path.home() / ".config" / "gdrive-cli" / "accounts"
 DOWNLOADS = pathlib.Path.home() / "Downloads"
 SETUP_GUIDE = pathlib.Path(__file__).resolve().parent / "GOOGLE_SETUP.md"
 # The Claude Desktop extension's settings; the same OAuth client also serves gdrive-cli.
-CLIENT_ID_ENV, CLIENT_SECRET_ENV, CLIENT_FILE_ENV = "GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_OAUTH_CLIENT_FILE"
+CLIENT_ID_ENV, CLIENT_SECRET_ENV, CLIENT_FILE_ENV = "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_CLIENT_FILE"
 CONNECT_TIMEOUT_S = 600
 GMAIL_WRITE_SCOPES = ["https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/gmail.compose"]
 # Chosen at `email auth login`: a read token is refused by Google itself on send and draft writes.
@@ -1028,7 +1028,7 @@ def connect(account: str | None, access: str, client_file: pathlib.Path | None, 
 
     Opens Google's sign-in page and returns at once; the page waits 10 minutes. Check
     the result with `connect-status`. The Google OAuth client comes from the
-    GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET settings, --client-file,
+    GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET settings, --client-file,
     ~/.config/email-cli, or the newest client_secret_*.json in Downloads.
     """
     import time

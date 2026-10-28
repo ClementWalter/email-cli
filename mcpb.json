@@ -4,9 +4,9 @@
   "long_description": "Reads, searches and answers your email: lists and searches messages, reads them, saves attachments, and writes replies and drafts. Nothing is ever sent without your confirmation in Claude.\n\nSetup with Gmail (about five minutes, free, once):\n1. Install Claude in Chrome and sign in to Google in Chrome with the address to connect.\n2. In Claude, ask: \"set up my email\". Claude calls `google_setup` and walks you through Google Cloud Console in Chrome, click by click: a project of your own, the Gmail API, and a sign-in client of type Desktop app. You type passwords and accept terms yourself.\n3. Paste the Client ID and Client secret Google shows into this extension's settings (or just leave the downloaded file in Downloads).\n4. Claude calls `connect`: a Google page opens, you choose your account and allow access. Your sign-in stays on this Mac.\n\nThe same Google project and client also work for the Google Drive extension. Connect more addresses by asking Claude to connect another account.\n\nOn a Mac without Google: accounts already set up in the Mail app (iCloud, Outlook, any IMAP, Gmail too) work with no Google project. Ask Claude to connect your Mail app account, and allow Claude to control Mail when macOS asks. Search is slower there.",
   "platforms": ["darwin", "linux"],
   "env": {
-    "GOOGLE_OAUTH_CLIENT_ID": "${user_config.client_id}",
-    "GOOGLE_OAUTH_CLIENT_SECRET": "${user_config.client_secret}",
-    "GOOGLE_OAUTH_CLIENT_FILE": "${user_config.client_file}"
+    "GOOGLE_CLIENT_ID": "${user_config.client_id}",
+    "GOOGLE_CLIENT_SECRET": "${user_config.client_secret}",
+    "GOOGLE_CLIENT_FILE": "${user_config.client_file}"
   },
   "user_config": {
     "client_id": {
