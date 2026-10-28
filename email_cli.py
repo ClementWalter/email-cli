@@ -142,6 +142,7 @@ def client_secret_path(account: str) -> pathlib.Path | None:
         CONFIG_DIR / "client_secret.json",
         GDRIVE_ACCOUNTS / account / "client_secret.json",
         GDRIVE_ACCOUNTS / "default" / "client_secret.json",
+        GDRIVE_ACCOUNTS.parent / "client_secret.json",
     ):
         if candidate.is_file():
             return candidate

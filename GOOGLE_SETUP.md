@@ -9,24 +9,27 @@ each step.
 
 One Google Cloud project and one OAuth client serve both the Email and the
 Google Drive extensions. When the user also wants Drive, enable the Google
-Drive API in step 2 too and reuse the same Client ID and Client secret. If such
+Drive APIs in step 2 too and reuse the same Client ID and Client secret: either
+extension finds a client the other one saved. If such
 a project already exists, select it and do only the missing steps.
 
 ## Steps
 
 1. **Create a project.** Open https://console.cloud.google.com/projectcreate.
-   Project name: `Claude` (any name). Leave Organization / Location as they
+   Project name: `Claude Google access` (any name). Leave Organization / Location as they
    are. Click **Create**, wait for the notification, then select the project
    in the project picker at the top.
-2. **Enable the Gmail API.** Open
-   https://console.cloud.google.com/apis/library/gmail.googleapis.com and click
-   **Enable**. For Drive, also open
-   https://console.cloud.google.com/apis/library/drive.googleapis.com and click
-   **Enable**.
+2. **Enable the APIs.** Open each of these and click **Enable**: Gmail
+   https://console.cloud.google.com/apis/library/gmail.googleapis.com, and for
+   the Google Drive extension too, Drive
+   https://console.cloud.google.com/apis/library/drive.googleapis.com, Sheets
+   https://console.cloud.google.com/apis/library/sheets.googleapis.com and Docs
+   https://console.cloud.google.com/apis/library/docs.googleapis.com. Enabling
+   all four now saves a second visit.
 3. **Configure the consent screen.** Open
    https://console.cloud.google.com/auth/overview. If it says "Google Auth
    Platform not configured yet", click **Get started**:
-   - App Information: App name `Claude Email` (any), User support email: the
+   - App Information: App name `Claude Google access` (any), User support email: the
      user's address. **Next**.
    - Audience: **External**. **Next**. (A Google Workspace user connecting only
      addresses of their own organization may pick **Internal** instead: no
@@ -39,7 +42,7 @@ a project already exists, select it and do only the missing steps.
    **Add users**, type every Gmail address to connect, **Save**.
 5. **Create the OAuth client.** Open
    https://console.cloud.google.com/auth/clients and click **Create client**.
-   Application type: **Desktop app**. Name: `Claude Email`. Leave "Use this
+   Application type: **Desktop app**. Name: `Claude Google access`. Leave "Use this
    client for an AI-powered agent" unticked. **Create**. The "OAuth client
    created" dialog shows the Client ID and the Client secret only this once:
    click **Download JSON** (it lands in Downloads as `client_secret_….json`).
@@ -63,7 +66,7 @@ a project already exists, select it and do only the missing steps.
    Claude send, reply and manage drafts, each send still needing the user's
    confirmation). A Google page opens in the browser: choose the account. On
    "Google hasn't verified this app" click **Continue**, or **Advanced** then
-   **Go to Claude Email (unsafe)**: the app is the user's own. Tick every
+   **Go to Claude Google access (unsafe)**: the app is the user's own. Tick every
    permission box, **Continue**. Then call `connect_status`. For another
    address, call `connect` with another `account` name (`work`, ...).
 

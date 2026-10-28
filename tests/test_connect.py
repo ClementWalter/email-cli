@@ -108,6 +108,12 @@ def test_client_from_settings_file(home, downloaded, monkeypatch):
     assert ec.client_config("default")[1] == str(downloaded)
 
 
+def test_client_saved_by_gdrive_is_shared(home):
+    (home / "gdrive").mkdir()
+    (home / "gdrive" / "client_secret.json").write_text(json.dumps(desktop_client()))
+    assert ec.client_config("default")[1] == str(home / "gdrive" / "client_secret.json")
+
+
 def test_client_found_in_downloads(downloaded):
     assert ec.downloaded_client() == downloaded
 
