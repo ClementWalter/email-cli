@@ -239,6 +239,11 @@ def test_connect_adopts_downloaded_client(downloaded, monkeypatch):
     assert (ec.CONFIG_DIR / "client_secret.json").is_file()
 
 
+def test_status_without_connect_says_none(home):
+    result = CliRunner().invoke(ec.cli, ["connect-status", "--json"])
+    assert json.loads(result.output)["step"] == "none"
+
+
 def test_status_of_dead_helper_is_failed(home):
     ec.write_connect_state(step="waiting", account="default", url="u", pid=2**22 + 12345)
     result = CliRunner().invoke(ec.cli, ["connect-status", "--json"])

@@ -1067,7 +1067,7 @@ def connect(account: str | None, access: str, client_file: pathlib.Path | None, 
 
 
 def emit_connect_state(state: dict, as_json: bool) -> None:
-    state = {k: v for k, v in state.items() if k != "pid"}
+    state = {k: v for k, v in state.items() if k != "pid"} or {"step": "none", "next": "call `connect`"}
     step = state.get("step")
     if as_json:
         click.echo(json.dumps(state))
