@@ -22,10 +22,9 @@ a project already exists, select it and do only the missing steps.
 2. **Enable the APIs.** Open each of these and click **Enable**: Gmail
    https://console.cloud.google.com/apis/library/gmail.googleapis.com, and for
    the Google Drive extension too, Drive
-   https://console.cloud.google.com/apis/library/drive.googleapis.com, Sheets
-   https://console.cloud.google.com/apis/library/sheets.googleapis.com and Docs
-   https://console.cloud.google.com/apis/library/docs.googleapis.com. Enabling
-   all four now saves a second visit.
+   https://console.cloud.google.com/apis/library/drive.googleapis.com and Sheets
+   https://console.cloud.google.com/apis/library/sheets.googleapis.com. Enabling
+   all three now saves a second visit.
 3. **Configure the consent screen.** Open
    https://console.cloud.google.com/auth/overview. If it says "Google Auth
    Platform not configured yet", click **Get started**:
@@ -42,7 +41,7 @@ a project already exists, select it and do only the missing steps.
    **Add users**, type every Gmail address to connect, **Save**.
 5. **Create the OAuth client.** Open
    https://console.cloud.google.com/auth/clients and click **Create client**.
-   Application type: **Desktop app**. Name: `Claude Google access`. Leave "Use this
+   Application type: **Desktop app**. Name: `Claude Desktop`. Leave "Use this
    client for an AI-powered agent" unticked. **Create**. The "OAuth client
    created" dialog shows the Client ID and the Client secret only this once:
    click **Download JSON** (it lands in Downloads as `client_secret_….json`).
