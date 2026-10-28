@@ -38,3 +38,15 @@ pending synchronization; exit 3 means unavailable or still pending. Both
 commands also exist as `auth status` and `auth sync`. Source `local` means the
 SDK copy exists but vault synchronization is unverified. Connect an account with
 `email auth login --account <name>`.
+
+## Without a terminal
+
+`email google-setup` prints the one-time Google Cloud setup
+([GOOGLE_SETUP.md](GOOGLE_SETUP.md)): the user's own project with the Gmail API
+and a Desktop app OAuth client, shared with gdrive-cli. `email connect` signs an
+account in through the browser from a detached helper and returns at once;
+`email connect-status` reports the outcome. `email connect --mailapp <name>`
+uses a Mail.app account instead. `mcpb.json` packs it as the "Email" Claude
+Desktop extension (`mcp-bridge pack email-cli --version X.Y.Z`), whose settings
+feed `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` or
+`GOOGLE_OAUTH_CLIENT_FILE`.

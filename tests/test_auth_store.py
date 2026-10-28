@@ -195,12 +195,12 @@ def test_consent_passes_login_hint(revoked_token, monkeypatch):
             return json.dumps({"token": "fresh"})
     class Flow:
         @staticmethod
-        def from_client_secrets_file(secret, scopes):
+        def from_client_config(config, scopes):
             return Flow()
         def run_local_server(self, **kwargs):
             consented.append(kwargs)
             return Fresh()
-    monkeypatch.setattr(cli, "client_secret_path", lambda account: revoked_token / "client_secret.json")
+    monkeypatch.setattr(cli, "require_client", lambda account: {"installed": {}})
     monkeypatch.setitem(sys.modules, "google_auth_oauthlib.flow", SimpleNamespace(InstalledAppFlow=Flow))
     cli.gmail_consent("work", "write", login_hint="work@example.test")
     assert consented == [{"port": 0, "login_hint": "work@example.test"}]

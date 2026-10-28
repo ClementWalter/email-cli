@@ -19,7 +19,7 @@ account name. Each command takes `--account` and `--backend auto|gmail|mailapp`:
 
   gmail     Google's REST API with an OAuth token stored per account under
             ~/.config/email-cli/accounts/<name>/token.json (the OAuth client is
-            the one gdrive-cli already uses). `email auth login` asks for read
+            the user's own Desktop app client, shared with gdrive-cli). `email auth login` asks for read
             access (gmail.readonly: no send, no draft writes) or write access. Works from any machine, searches
             with Gmail's query syntax, fast on large mailboxes.
   mailapp   macOS Mail.app driven over JavaScript for Automation. Covers the
@@ -31,7 +31,12 @@ account name. Each command takes `--account` and `--backend auto|gmail|mailapp`:
             search fall back to mailapp; send never does (a timed-out send may
             have gone through).
 
-Commands: accounts, mailboxes, list, search, read, attachments, send, reply, and
+Without a terminal: `google-setup` prints the Google Cloud steps (GOOGLE_SETUP.md),
+`connect` signs in through a detached loopback OAuth flow or registers a Mail.app
+account, and `connect-status` reports how it went.
+
+Commands: accounts, mailboxes, list, search, read, attachments, send, reply, connect,
+connect-status, google-setup, and
 the Gmail-only drafts, draft-show, draft-update, draft-delete. send, reply,
 draft-update and draft-delete are dry runs unless --yes. Every read supports --json; message ids are the backend's own
 (Gmail id, or Mail.app "<account>:<mailbox>:<id>"), stable for the caller.
@@ -44,6 +49,7 @@ import datetime as dt
 import html
 import json
 import logging
+import os
 import pathlib
 import re
 import subprocess
@@ -60,6 +66,11 @@ import email_auth_store as auth_store
 CONFIG_DIR = pathlib.Path.home() / ".config" / "email-cli"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 GDRIVE_ACCOUNTS = pathlib.Path.home() / ".config" / "gdrive-cli" / "accounts"
+DOWNLOADS = pathlib.Path.home() / "Downloads"
+SETUP_GUIDE = pathlib.Path(__file__).resolve().parent / "GOOGLE_SETUP.md"
+# The Claude Desktop extension's settings; the same OAuth client also serves gdrive-cli.
+CLIENT_ID_ENV, CLIENT_SECRET_ENV, CLIENT_FILE_ENV = "GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_OAUTH_CLIENT_FILE"
+CONNECT_TIMEOUT_S = 600
 GMAIL_WRITE_SCOPES = ["https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/gmail.compose"]
 # Chosen at `email auth login`: a read token is refused by Google itself on send and draft writes.
 GMAIL_ACCESS_SCOPES = {"read": ["https://www.googleapis.com/auth/gmail.readonly"], "write": GMAIL_WRITE_SCOPES}
@@ -89,7 +100,30 @@ def account_config(name: str | None) -> tuple[str, dict]:
     try:
         return name, cfg["accounts"][name]
     except KeyError:
+        if not cfg["accounts"]:
+            raise click.ClickException(NO_ACCOUNT)
         raise click.ClickException(f"unknown account {name!r}; known: {', '.join(cfg['accounts'])}")
+
+
+NO_ACCOUNT = ("no email account is set up yet. From Claude: call `google_setup` and follow it, then `connect` "
+              "(or, on a Mac, `connect` with `mailapp` set to an account of the Mail app). "
+              "In a terminal: `email connect`.")
+
+
+def save_config(cfg: dict) -> None:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
+    CONFIG_PATH.chmod(0o600)
+
+
+def register_account(name: str, **fields: str) -> None:
+    """Add or update an account; the first one becomes the default."""
+    cfg = load_config()
+    cfg = {**cfg, "accounts": {**cfg.get("accounts", {})}}
+    cfg["accounts"][name] = {**cfg["accounts"].get(name, {}), **{k: v for k, v in fields.items() if v}}
+    if not cfg.get("default_account"):
+        cfg["default_account"] = name
+    save_config(cfg)
 
 
 def token_path(account: str) -> pathlib.Path:
@@ -112,6 +146,54 @@ def client_secret_path(account: str) -> pathlib.Path | None:
         if candidate.is_file():
             return candidate
     return None
+
+
+def load_client_file(path: pathlib.Path) -> dict:
+    """A Desktop app client JSON as Google downloads it; other client types cannot do the loopback flow."""
+    try:
+        data = json.loads(pathlib.Path(path).read_text())
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(f"cannot read the Google client file {path}: {exc}")
+    if "installed" in data:
+        return data
+    kind = "a Web application client" if "web" in data else "not a Google OAuth client JSON"
+    raise click.ClickException(f"{path} is {kind}; create an OAuth client of type Desktop app (`google_setup`, step 5)")
+
+
+def downloaded_client() -> pathlib.Path | None:
+    """The newest client JSON the Cloud console saved in Downloads."""
+    found = sorted(DOWNLOADS.glob("client_secret_*.json"), key=lambda p: p.stat().st_mtime) if DOWNLOADS.is_dir() else []
+    return found[-1] if found else None
+
+
+def client_config(account: str) -> tuple[dict, str] | None:
+    """The OAuth client and where it came from: extension settings, then files (Downloads only once `connect` adopts it)."""
+    client_id, secret = os.environ.get(CLIENT_ID_ENV, "").strip(), os.environ.get(CLIENT_SECRET_ENV, "").strip()
+    if client_id and secret:
+        return {"installed": {"client_id": client_id, "client_secret": secret, "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                              "token_uri": "https://oauth2.googleapis.com/token", "redirect_uris": ["http://localhost"]}}, "extension settings"
+    if os.environ.get(CLIENT_FILE_ENV, "").strip():
+        path = pathlib.Path(os.environ[CLIENT_FILE_ENV].strip()).expanduser()
+        return load_client_file(path), str(path)
+    path = client_secret_path(account)
+    return (load_client_file(path), str(path)) if path else None
+
+
+NO_CLIENT = ("no Google OAuth client is configured. From Claude: call `google_setup` and follow it (Google Cloud project, "
+             "Desktop app client), then fill Client ID and Client secret in the Email extension's settings or call "
+             "`connect` with `client_file`. Without Google, a Mac can use the Mail app: `connect` with `mailapp`.")
+
+
+def require_client(account: str) -> dict:
+    found = client_config(account)
+    if not found:
+        raise click.ClickException(NO_CLIENT)
+    return found[0]
+
+
+def adopt_client_file(path: pathlib.Path) -> None:
+    """Keep a private copy so the sign-in survives the user tidying Downloads."""
+    auth_store.write_private(CONFIG_DIR / "client_secret.json", load_client_file(path))
 
 
 GMAIL_IMAP_HOSTS = ("imap.gmail.com", "imap.googlemail.com")
@@ -144,7 +226,9 @@ def resolve_backend(option: str, account: str, acc: dict, macos: bool = IS_MACOS
             if is_gmail_hosted(acc, mailapp_servers()):
                 log.warning("%s is a Google account served through Mail.app; `email auth login -a %s` makes it use the faster Gmail API", account, account)
             return "mailapp"
-        raise click.ClickException(f"account {account!r}: no Gmail token (run `email auth login --account {account}`) and no Mail.app here")
+        raise click.ClickException(f"account {account!r} is not signed in to Gmail{'' if macos else ' and Mail.app needs macOS'}. "
+                                   f"From Claude: call `connect` with account {account!r} (`google_setup` first if Google is not set up). "
+                                   f"In a terminal: `email auth login -a {account}`")
     if option == "mailapp" and not macos:
         raise click.ClickException("the mailapp backend needs macOS")
     return option
@@ -243,21 +327,20 @@ def gmail_credentials(account: str):
         except RefreshError as exc:
             # A revoked or expired grant cannot be refreshed again: report a re-login
             # instead of raising Google's traceback.
-            log.warning("stored Gmail grant for %s is dead (%s); consent again", account, exc)
+            log.warning("Google no longer accepts the saved sign-in of %s (%s); while the Google app is in Testing it "
+                        "lasts 7 days (`google_setup`, step 6)", account, exc)
             creds = None
     if creds and creds.valid:
         return creds
-    raise click.ClickException(f"account {account!r} has no valid Gmail token; run `email auth login --account {account}`")
+    raise click.ClickException(f"account {account!r} has no valid Gmail token; from Claude call `connect` with account {account!r}, "
+                               f"in a terminal run `email auth login --account {account}`")
 
 
 def gmail_consent(account: str, access: str, login_hint: str | None = None):
     """Browser consent for exactly the scopes of `access`, replacing any stored token."""
     from google_auth_oauthlib.flow import InstalledAppFlow
 
-    secret = client_secret_path(account)
-    if secret is None:
-        raise click.ClickException("no client_secret.json found (email-cli or gdrive-cli config)")
-    flow = InstalledAppFlow.from_client_secrets_file(str(secret), GMAIL_ACCESS_SCOPES[access])
+    flow = InstalledAppFlow.from_client_config(require_client(account), GMAIL_ACCESS_SCOPES[access])
     creds = flow.run_local_server(port=0, **({"login_hint": login_hint} if login_hint else {}))
     save_token(creds, account)
     return creds
@@ -344,11 +427,11 @@ def run_backend(option: str, account: str, acc: dict, gmail, mailapp, macos: boo
 
 def client_project_id(account: str | None) -> str:
     """The Cloud project of the OAuth client, from its client_secret.json."""
-    path = client_secret_path(account or "default")
-    if not path:
+    try:
+        found = client_config(account or "default")
+    except click.ClickException:
         return ""
-    data = json.loads(path.read_text())
-    return (data.get("installed") or data.get("web") or {}).get("project_id", "")
+    return found[0]["installed"].get("project_id", "") if found else ""
 
 
 def explain_http_error(exc, account: str | None = None) -> str:
@@ -731,7 +814,10 @@ def main() -> None:
 def accounts(as_json: bool) -> None:
     """List configured accounts and which backend each would use here."""
     cfg = load_config()
-    servers = mailapp_servers(refresh=True) if IS_MACOS else {}
+    # Asking Mail launches it: only when an account is served by Mail.app.
+    servers = mailapp_servers(refresh=True) if IS_MACOS and any(a.get("mailapp") for a in cfg["accounts"].values()) else {}
+    if not cfg["accounts"]:
+        log.warning(NO_ACCOUNT)
     rows = []
     for name, acc in cfg["accounts"].items():
         rows.append({"name": name, "address": acc.get("address", ""), "mailapp": acc.get("mailapp", ""), "gmail_token": token_path(name).exists(),
@@ -786,6 +872,227 @@ def auth_sync(account: str | None, as_json: bool) -> None:
 
 cli.add_command(auth_status, "auth-status")
 cli.add_command(auth_sync, "auth-sync")
+
+
+# --- terminal-free setup -------------------------------------------------------
+
+def connect_state_path() -> pathlib.Path:
+    return CONFIG_DIR / "connect.json"
+
+
+def write_connect_state(**state) -> None:
+    auth_store.write_private(connect_state_path(), state)
+
+
+def read_connect_state() -> dict:
+    path = connect_state_path()
+    return json.loads(path.read_text()) if path.is_file() else {}
+
+
+def pid_alive(pid: int | None) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def gmail_address(creds) -> str:
+    from googleapiclient.discovery import build
+
+    return build("gmail", "v1", credentials=creds, cache_discovery=False).users().getProfile(userId="me").execute()["emailAddress"]
+
+
+CONNECTED_PAGE = (b"<!doctype html><meta charset=utf-8><title>Email connected</title>"
+                  b"<body style='font-family:system-ui;margin:3em'><h1>Done</h1><p>You can close this tab and go back to Claude.</p>")
+
+
+def connect_flow(account: str, access: str, timeout: float = CONNECT_TIMEOUT_S, open_browser=None) -> None:
+    """Installed-app loopback flow: serve 127.0.0.1, wait for Google's redirect, store the token.
+
+    Progress goes to the connect state file, the only channel a detached run has."""
+    import secrets
+    import time
+    import webbrowser
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.parse import parse_qs, urlparse
+
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    received: dict = {}
+
+    class Redirect(BaseHTTPRequestHandler):
+        def do_GET(self):
+            query = parse_qs(urlparse(self.path).query)
+            if "code" not in query and "error" not in query:
+                self.send_error(404)
+                return
+            received.update({k: v[0] for k, v in query.items()})
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(CONNECTED_PAGE)
+
+        def log_message(self, *args):
+            pass
+
+    try:
+        server = HTTPServer(("127.0.0.1", 0), Redirect)
+        server.timeout = 1
+        flow = InstalledAppFlow.from_client_config(require_client(account), GMAIL_ACCESS_SCOPES[access],
+                                                   redirect_uri=f"http://127.0.0.1:{server.server_port}/")
+        hint = load_config().get("accounts", {}).get(account, {}).get("address")
+        # prompt=consent makes Google return a refresh token even on a repeat sign-in.
+        url, state = flow.authorization_url(access_type="offline", prompt="consent", state=secrets.token_urlsafe(16),
+                                            **({"login_hint": hint} if hint else {}))
+        write_connect_state(step="waiting", account=account, access=access, url=url, pid=os.getpid())
+        (open_browser or webbrowser.open)(url)
+        deadline = time.monotonic() + timeout
+        while not received and time.monotonic() < deadline:
+            server.handle_request()
+        server.server_close()
+        if not received:
+            raise click.ClickException(f"no answer from Google within {int(timeout)} s; call `connect` again")
+        if received.get("state") != state:
+            raise click.ClickException("the answer from Google did not match this sign-in; call `connect` again")
+        if "error" in received:
+            raise click.ClickException(f"Google refused: {received['error']} (access_denied: the user cancelled, or the "
+                                       "address is not a test user, `google_setup` step 4)")
+        # Google lets the user untick scopes; oauthlib would otherwise raise on any scope difference.
+        os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+        token = flow.fetch_token(code=received["code"])
+        granted = token.get("scope", "")
+        granted = set(granted.split() if isinstance(granted, str) else granted)
+        if not set(GMAIL_ACCESS_SCOPES[access]) <= granted:
+            raise click.ClickException("Google granted only part of the access: call `connect` again and tick every box")
+        save_token(flow.credentials, account)
+        address = gmail_address(flow.credentials)
+        register_account(account, address=address)
+        write_connect_state(step="done", account=account, access=access, address=address)
+    except Exception as exc:  # noqa: BLE001 — the state file is the detached run's only reader
+        message = exc.message if isinstance(exc, click.ClickException) else f"{type(exc).__name__}: {exc}"
+        write_connect_state(step="failed", account=account, access=access, error=message)
+
+
+def stop_previous_connect() -> None:
+    """A newer sign-in replaces a pending one; both would race on the state file."""
+    import signal
+
+    state = read_connect_state()
+    if state.get("step") == "waiting" and pid_alive(state.get("pid")):
+        os.kill(state["pid"], signal.SIGTERM)
+
+
+@cli.command("google-setup", epilog="\b\nExamples:\n  email google-setup\n  email google-setup --json")
+@json_option
+def google_setup(as_json: bool) -> None:
+    """Step-by-step Google Cloud setup (project, Gmail API, Desktop app OAuth client) for Claude to walk the user through, and what is configured here."""
+    found = client_config("default")
+    pending_download = found is None and downloaded_client() is not None
+    status = {"client_configured": found is not None, "client_source": found[1] if found else None,
+              "client_project": found[0]["installed"].get("project_id") if found else None,
+              "client_in_downloads": str(downloaded_client()) if pending_download else None,
+              "accounts": {name: {"address": acc.get("address", ""), "gmail_token": token_path(name).exists(),
+                                  "mailapp": acc.get("mailapp", "")} for name, acc in load_config()["accounts"].items()}}
+    guide = SETUP_GUIDE.read_text()
+    if as_json:
+        click.echo(json.dumps({"status": status, "guide": guide}, indent=2))
+        return
+    click.echo(guide)
+    click.echo("## Here now\n")
+    click.echo(f"- OAuth client: {status['client_source'] or 'none'}{' (project ' + status['client_project'] + ')' if status['client_project'] else ''}")
+    if pending_download:
+        click.echo(f"- Downloaded client JSON, adopted by `connect`: {status['client_in_downloads']}")
+    for name, acc in status["accounts"].items():
+        click.echo(f"- account {name}: {acc['address'] or '-'}, gmail={'yes' if acc['gmail_token'] else 'no'}, mailapp={acc['mailapp'] or '-'}")
+
+
+@cli.command(epilog="\b\nExamples:\n  email connect\n  email connect -a work --access write\n"
+                    "  email connect --client-file ~/Downloads/client_secret_123.apps.googleusercontent.com.json\n"
+                    "  email connect -a icloud --mailapp iCloud")
+@click.option("--account", "-a", default=None, help="name for this mailbox (default: the configured default, else 'default')")
+@click.option("--access", type=click.Choice(sorted(GMAIL_ACCESS_SCOPES)), default="read", show_default=True,
+              help="read: gmail.readonly only; write: also send, reply and drafts")
+@click.option("--client-file", type=click.Path(exists=True, dir_okay=False, path_type=pathlib.Path), default=None,
+              help="the Desktop app client JSON downloaded from Google Cloud; kept privately for later sign-ins")
+@click.option("--mailapp", default=None, help="macOS: use this Mail app account instead of Google (no Google project needed)")
+@click.option("--wait", "wait_s", default=0, show_default=True, help="seconds to wait for the sign-in to finish (0: return once the page is open)")
+@click.option("--helper", is_flag=True, hidden=True, help="Run the sign-in in this process.")
+@json_option
+def connect(account: str | None, access: str, client_file: pathlib.Path | None, mailapp: str | None, wait_s: int, helper: bool, as_json: bool) -> None:
+    """Sign in to Gmail in the browser, no terminal needed, or register a Mail app account.
+
+    Opens Google's sign-in page and returns at once; the page waits 10 minutes. Check
+    the result with `connect-status`. The Google OAuth client comes from the
+    GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET settings, --client-file,
+    ~/.config/email-cli, or the newest client_secret_*.json in Downloads.
+    """
+    import time
+
+    name = account or load_config().get("default_account") or "default"
+    token_path(name)
+    if helper:
+        connect_flow(name, access)
+        return
+    if mailapp:
+        if not IS_MACOS:
+            raise click.ClickException("the Mail app backend needs macOS; use Google instead (`google_setup`)")
+        servers = mailapp_servers(refresh=True)
+        if mailapp not in servers:
+            raise click.ClickException(f"no Mail app account {mailapp!r}; Mail has: {', '.join(servers) or 'none'}")
+        register_account(name, mailapp=mailapp)
+        result = {"step": "done", "account": name, "mailapp": mailapp}
+        click.echo(json.dumps(result) if as_json else f"account {name} now reads Mail app account {mailapp!r}")
+        return
+    if client_file or (client_config(name) is None and downloaded_client()):
+        adopt_client_file(client_file or downloaded_client())
+    require_client(name)
+    stop_previous_connect()
+    write_connect_state(step="starting", account=name, access=access)
+    # Detached so the sign-in outlives this command, which an MCP client waits on.
+    subprocess.Popen([sys.executable, str(pathlib.Path(__file__).resolve()), "connect", "--helper", "-a", name, "--access", access],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    deadline = time.monotonic() + max(wait_s, 15)
+    state = read_connect_state()
+    while time.monotonic() < deadline:
+        state = read_connect_state()
+        if state.get("step") in ("done", "failed") or (state.get("step") == "waiting" and not wait_s):
+            break
+        time.sleep(0.2)
+    emit_connect_state(state, as_json)
+
+
+def emit_connect_state(state: dict, as_json: bool) -> None:
+    state = {k: v for k, v in state.items() if k != "pid"}
+    step = state.get("step")
+    if as_json:
+        click.echo(json.dumps(state))
+    elif step == "waiting":
+        click.echo(f"Google's sign-in page is open in the browser ({state['url']}). Choose the account; on \"Google hasn't "
+                   "verified this app\" click Continue, or Advanced then Go to … (unsafe); tick every box and Continue. "
+                   "Then check with `connect-status`.")
+    elif step == "done":
+        click.echo(f"account {state['account']} connected to Gmail as {state.get('address')} ({state.get('access')} access)")
+    elif step == "failed":
+        raise click.ClickException(f"sign-in of account {state.get('account')} failed: {state.get('error')}")
+    elif step == "starting":
+        raise click.ClickException("the sign-in did not start; run `email connect --helper` in a terminal to see why")
+    else:
+        click.echo("no sign-in started; call `connect`")
+
+
+@cli.command("connect-status", epilog="\b\nExamples:\n  email connect-status\n  email connect-status --json")
+@json_option
+def connect_status(as_json: bool) -> None:
+    """Result of the last `connect`: waiting for the user, done (with the address), or failed (with why)."""
+    state = read_connect_state()
+    if state.get("step") == "waiting" and not pid_alive(state.get("pid")):
+        state = {**state, "step": "failed", "error": "the sign-in page stopped before Google answered; call `connect` again"}
+    emit_connect_state(state, as_json)
 
 
 @cli.command(epilog="\b\nExamples:\n  email mailboxes -a default\n  email mailboxes -a icloud --backend mailapp --json")

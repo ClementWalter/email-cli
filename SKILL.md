@@ -40,6 +40,19 @@ in Mail.app. Without that file no account is known and every command stops with
   `auth sync`. Source `local` means the token exists but its vault sync is
   unverified.
 - **Mail.app backend:** no auth of its own; it uses the accounts Mail.app has.
+- **Without a terminal (Claude Desktop extension):** `email google-setup` prints
+  the one-time Google Cloud steps (own project, Gmail API, consent screen,
+  Desktop app OAuth client) for Claude to walk the user through in Chrome, plus
+  what is configured here. The OAuth client comes from `GOOGLE_OAUTH_CLIENT_ID`
+  + `GOOGLE_OAUTH_CLIENT_SECRET` or `GOOGLE_OAUTH_CLIENT_FILE` (the extension's
+  settings), `--client-file`, `~/.config/email-cli/client_secret.json`,
+  gdrive-cli's, or the newest `client_secret_*.json` in Downloads (copied
+  privately on `connect`). `email connect [-a NAME] [--access read|write]`
+  opens Google's sign-in page from a detached helper and returns at once (the
+  page waits 10 minutes); `email connect-status` tells waiting / done / failed.
+  It saves the token like `auth login` and adds the account (with its address)
+  to config.json, the first one becoming the default. `email connect -a icloud
+  --mailapp iCloud` registers a Mail.app account instead (macOS).
 
 ## Output conventions
 

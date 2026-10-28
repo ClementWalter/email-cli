@@ -57,7 +57,7 @@ def consent(tmp_path, monkeypatch):
 
     class Flow:
         @staticmethod
-        def from_client_secrets_file(secret, scopes):
+        def from_client_config(config, scopes):
             requested.append(scopes)
             return Flow()
 
@@ -65,7 +65,7 @@ def consent(tmp_path, monkeypatch):
             return SimpleNamespace(to_json=lambda: json.dumps({"token": "fresh"}))
 
     monkeypatch.setattr(ec, "CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(ec, "client_secret_path", lambda account: tmp_path / "client_secret.json")
+    monkeypatch.setattr(ec, "require_client", lambda account: {"installed": {}})
     monkeypatch.setitem(sys.modules, "google_auth_oauthlib.flow", SimpleNamespace(InstalledAppFlow=Flow))
     return requested
 
