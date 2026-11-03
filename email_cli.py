@@ -23,13 +23,11 @@ account name. Each command takes `--account` and `--backend auto|gmail|mailapp`:
             access (gmail.readonly: no send, no draft writes) or write access. Works from any machine, searches
             with Gmail's query syntax, fast on large mailboxes.
   mailapp   macOS Mail.app driven over JavaScript for Automation. Covers the
-            accounts Gmail cannot (iCloud, Outlook, IMAP) but only on a Mac
-            with Mail running, and full-text search there is slow: bound it
-            with --since and a mailbox.
-  auto      gmail when the account has a token, else mailapp on macOS. When Gmail
-            times out, is unreachable or rejects the token, mailboxes/list/
-            search fall back to mailapp; send never does (a timed-out send may
-            have gone through).
+            accounts Gmail cannot (iCloud, IMAP) but only on a Mac, launches
+            Mail when it is closed, and full-text search there is slow: bound
+            it with --since and a mailbox.
+  auto      gmail when the account has a token, else mailapp on macOS. A Gmail
+            failure is reported, never retried through Mail.app.
 
 Without a terminal: `google-setup` prints the Google Cloud steps (GOOGLE_SETUP.md),
 `connect` signs in through a detached loopback OAuth flow or registers a Mail.app
@@ -198,14 +196,14 @@ def adopt_client_file(path: pathlib.Path) -> None:
 
 
 GMAIL_IMAP_HOSTS = ("imap.gmail.com", "imap.googlemail.com")
-# Mail.app account name -> IMAP host. Hosts rarely change, and asking Mail costs an Apple
-# event (and launches Mail), so `email accounts` refreshes it and other commands read it.
+# Mail.app account name -> IMAP host. Asking Mail launches it, so only `connect --mailapp`
+# refreshes this cache; every other command reads it and treats a missing cache as empty.
 MAILAPP_SERVERS_CACHE = CONFIG_DIR / "mailapp-servers.json"
 
 
 def mailapp_servers(refresh: bool = False) -> dict[str, str]:
-    if not refresh and MAILAPP_SERVERS_CACHE.is_file():
-        return json.loads(MAILAPP_SERVERS_CACHE.read_text())
+    if not refresh:
+        return json.loads(MAILAPP_SERVERS_CACHE.read_text()) if MAILAPP_SERVERS_CACHE.is_file() else {}
     servers = jxa("const out = {}; Mail.accounts().forEach(a => { out[a.name()] = a.serverName() || ''; }); JSON.stringify(out);") or {}
     MAILAPP_SERVERS_CACHE.parent.mkdir(parents=True, exist_ok=True)
     MAILAPP_SERVERS_CACHE.write_text(json.dumps(servers, ensure_ascii=False, indent=2))
@@ -381,7 +379,7 @@ class GmailApi:
         from googleapiclient.discovery import build
 
         self.account = account
-        # A bounded socket timeout turns a stalled Gmail into an error `auto` can fall back from.
+        # A bounded socket timeout turns a stalled Gmail into an error instead of a hang.
         http = AuthorizedHttp(gmail_credentials(account), http=httplib2.Http(timeout=GMAIL_TIMEOUT_S))
         self.svc = build("gmail", "v1", http=http, cache_discovery=False)
 
@@ -393,37 +391,9 @@ def gmail_service(account: str):
     return GmailApi(account)
 
 
-def gmail_unavailable(exc: Exception) -> bool:
-    """Gmail is down, unreachable or not authorised — not that the request itself was wrong."""
-    if isinstance(exc, (TimeoutError, ConnectionError)):
-        return True
-    kind = type(exc).__name__
-    if kind == "HttpError":
-        status = getattr(getattr(exc, "resp", None), "status", 0)
-        # A 403 for a disabled API is a setup gap, not a refusal of this request.
-        return status in (429, 500, 502, 503, 504) or (status == 403 and explain_http_error(exc).startswith("Gmail API is not enabled"))
-    if kind in ("ServerNotFoundError", "TransportError", "RefreshError"):
-        return True
-    return isinstance(exc, click.ClickException) and "no valid Gmail token" in exc.message
-
-
 def run_backend(option: str, account: str, acc: dict, gmail, mailapp, macos: bool = IS_MACOS) -> None:
-    """Run `gmail` or `mailapp` for the resolved backend. Under `auto`, Mail.app is the fallback
-    when Gmail cannot answer; an explicit --backend never switches."""
-    backend = resolve_backend(option, account, acc, macos)
-    if backend != "gmail":
-        mailapp()
-        return
-    if option != "auto" or not (macos and acc.get("mailapp")):
-        gmail()
-        return
-    try:
-        gmail()
-    except Exception as exc:
-        if not gmail_unavailable(exc):
-            raise
-        log.warning("Gmail unavailable for %s (%s: %s); falling back to Mail.app", account, type(exc).__name__, exc)
-        mailapp()
+    """Run `gmail` or `mailapp` for the resolved backend; a Gmail failure surfaces as is."""
+    (gmail if resolve_backend(option, account, acc, macos) == "gmail" else mailapp)()
 
 
 def client_project_id(account: str | None) -> str:
@@ -815,8 +785,7 @@ def main() -> None:
 def accounts(as_json: bool) -> None:
     """List configured accounts and which backend each would use here."""
     cfg = load_config()
-    # Asking Mail launches it: only when an account is served by Mail.app.
-    servers = mailapp_servers(refresh=True) if IS_MACOS and any(a.get("mailapp") for a in cfg["accounts"].values()) else {}
+    servers = mailapp_servers()
     if not cfg["accounts"]:
         log.warning(NO_ACCOUNT)
     rows = []

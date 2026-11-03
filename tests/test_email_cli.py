@@ -387,27 +387,9 @@ def gmail_times_out():
     raise TimeoutError("timed out")
 
 
-def test_auto_falls_back_to_mailapp_when_gmail_times_out(gmail_account):
-    ran = []
-    ec.run_backend("auto", "default", gmail_account, gmail=gmail_times_out, mailapp=lambda: ran.append("mailapp"), macos=True)
-    assert ran == ["mailapp"]
-
-
-def test_explicit_gmail_backend_does_not_fall_back(gmail_account):
+def test_auto_reraises_a_gmail_timeout_instead_of_using_mailapp(gmail_account):
     with pytest.raises(TimeoutError):
-        ec.run_backend("gmail", "default", gmail_account, gmail=gmail_times_out, mailapp=lambda: None, macos=True)
-
-
-def test_auto_without_mailapp_reraises_gmail_failure(gmail_account):
-    with pytest.raises(TimeoutError):
-        ec.run_backend("auto", "default", {"mailapp": ""}, gmail=gmail_times_out, mailapp=lambda: None, macos=True)
-
-
-def test_auto_reraises_a_bad_request_instead_of_falling_back(gmail_account):
-    def bad_query():
-        raise ValueError("bad query")
-    with pytest.raises(ValueError):
-        ec.run_backend("auto", "default", gmail_account, gmail=bad_query, mailapp=lambda: None, macos=True)
+        ec.run_backend("auto", "default", gmail_account, gmail=gmail_times_out, mailapp=lambda: pytest.fail("Mail.app used"), macos=True)
 
 
 def test_auto_uses_gmail_when_it_answers(gmail_account):
@@ -416,38 +398,14 @@ def test_auto_uses_gmail_when_it_answers(gmail_account):
     assert ran == ["gmail"]
 
 
-class HttpError(Exception):
-    def __init__(self, status, content=b""):
-        self.resp = type("Resp", (), {"status": status})()
-        self.content = content
-
-
-API_DISABLED = json.dumps({"error": {"message": "Gmail API has not been used in project 1 before or it is disabled.", "details": []}}).encode()
-
-
-@pytest.mark.parametrize(("exc", "expected"), [
-    (TimeoutError(), True),
-    (ConnectionRefusedError(), True),
-    (HttpError(503), True),
-    (HttpError(429), True),
-    (HttpError(404), False),
-    (HttpError(403, API_DISABLED), True),
-    (HttpError(403, b'{"error": {"message": "Insufficient Permission"}}'), False),
-    (click.ClickException("account 'default' has no valid Gmail token; connect Email"), True),
-    (click.ClickException("no mailbox X"), False),
-])
-def test_gmail_unavailable(exc, expected):
-    assert ec.gmail_unavailable(exc) is expected
-
-
-def test_list_falls_back_to_mailapp_when_gmail_is_down(gmail_account, monkeypatch):
+def test_list_reports_gmail_down_without_mailapp(gmail_account, monkeypatch):
     monkeypatch.setattr(ec, "account_config", lambda account: ("default", gmail_account))
     monkeypatch.setattr(ec, "gmail_service", lambda name: gmail_times_out())
-    monkeypatch.setattr(ec, "mailapp_items", lambda *a, **k: [ec.item("mailapp", "default", "Google:INBOX:1", 1788000000, "a@b", "c@d", "via mail.app")])
+    monkeypatch.setattr(ec, "mailapp_items", lambda *a, **k: pytest.fail("Mail.app used"))
     run_backend = ec.run_backend
     monkeypatch.setattr(ec, "run_backend", lambda *a, **k: run_backend(*a, **k, macos=True))
-    result = CliRunner().invoke(ec.cli, ["list", "INBOX", "--json"], catch_exceptions=False)
-    assert json.loads(result.stdout)[0]["subject"] == "via mail.app"
+    result = CliRunner().invoke(ec.cli, ["list", "INBOX", "--json"])
+    assert isinstance(result.exception, TimeoutError)
 
 
 @pytest.mark.parametrize(("server", "expected"), [
@@ -478,6 +436,22 @@ def test_mailapp_servers_reads_the_cache_without_asking_mail(tmp_path, monkeypat
     monkeypatch.setattr(ec, "MAILAPP_SERVERS_CACHE", cache)
     monkeypatch.setattr(ec, "jxa", lambda *a, **k: pytest.fail("Mail.app must not be queried"))
     assert ec.mailapp_servers() == {"Kakarot": "imap.gmail.com"}
+
+
+def test_mailapp_servers_without_cache_does_not_ask_mail(tmp_path, monkeypatch):
+    monkeypatch.setattr(ec, "MAILAPP_SERVERS_CACHE", tmp_path / "mailapp-servers.json")
+    monkeypatch.setattr(ec, "jxa", lambda *a, **k: pytest.fail("Mail.app must not be queried"))
+    assert ec.mailapp_servers() == {}
+
+
+def test_accounts_does_not_ask_mail(tmp_path, monkeypatch):
+    monkeypatch.setattr(ec, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(ec, "MAILAPP_SERVERS_CACHE", tmp_path / "mailapp-servers.json")
+    monkeypatch.setattr(ec, "IS_MACOS", True)
+    monkeypatch.setattr(ec, "load_config", lambda: {"default_account": "icloud", "accounts": {"icloud": {"mailapp": "iCloud"}}})
+    monkeypatch.setattr(ec, "jxa", lambda *a, **k: pytest.fail("Mail.app must not be queried"))
+    result = CliRunner().invoke(ec.cli, ["accounts", "--json"], catch_exceptions=False)
+    assert json.loads(result.output)[0]["mailapp"] == "iCloud"
 
 
 def test_mailapp_servers_refresh_writes_the_cache(tmp_path, monkeypatch):

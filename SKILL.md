@@ -1,6 +1,6 @@
 ---
 name: email-cli
-description: Read, search and send the user's email from the terminal via the bundled `email` command, the same commands on every machine. Two backends behind one CLI - the Gmail API with a per-account OAuth token (works from any machine, fast search with Gmail query syntax) and macOS Mail.app over JavaScript for Automation (covers iCloud/Outlook/IMAP accounts, macOS only). Accounts are names mapped in ~/.config/email-cli/config.json (e.g. `default`, `work`, `icloud`); `--backend auto` picks Gmail when a token exists, else Mail.app. Commands - `email accounts`, `email mailboxes`, `email list <mailbox>`, `email search "<query>"`, `email read <id>`, `email attachments <id> --out DIR`, `email send <to> --subject ... --yes`, `email reply <id> --yes` (threaded reply; `--draft` saves it as a Gmail draft in the thread instead), and Gmail drafts - `email drafts [-q QUERY]`, `email draft-show <draft_id>`, `email draft-update <draft_id> --file draft.md --yes` (keeps thread and reply headers), `email draft-delete <draft_id>... --yes`. `send`/`reply` take `--file <draft.md>` instead of `--body` to reflow a hard-wrapped Markdown draft into normal email paragraphs. Every read supports --json. Use when the user wants to read, find, or answer email, save an attachment, or a heartbeat needs a mailbox as data.
+description: Read, search and send the user's email from the terminal via the bundled `email` command, the same commands on every machine. Two backends behind one CLI - the Gmail API with a per-account OAuth token (works from any machine, fast search with Gmail query syntax) and macOS Mail.app over JavaScript for Automation (for the non-Google accounts Gmail cannot serve, e.g. iCloud; macOS only; launches Mail). Accounts are names mapped in ~/.config/email-cli/config.json (e.g. `default`, `work`, `icloud`); `--backend auto` picks Gmail when a token exists, else Mail.app, and never falls back from Gmail to Mail.app. Commands - `email accounts`, `email mailboxes`, `email list <mailbox>`, `email search "<query>"`, `email read <id>`, `email attachments <id> --out DIR`, `email send <to> --subject ... --yes`, `email reply <id> --yes` (threaded reply; `--draft` saves it as a Gmail draft in the thread instead), and Gmail drafts - `email drafts [-q QUERY]`, `email draft-show <draft_id>`, `email draft-update <draft_id> --file draft.md --yes` (keeps thread and reply headers), `email draft-delete <draft_id>... --yes`. `send`/`reply` take `--file <draft.md>` instead of `--body` to reflow a hard-wrapped Markdown draft into normal email paragraphs. Every read supports --json. Use when the user wants to read, find, or answer email, save an attachment, or a heartbeat needs a mailbox as data.
 ---
 
 # email-cli
@@ -57,7 +57,7 @@ in Mail.app. Without that file no account is known and every command stops with
 ## Output conventions
 
 Reads print compact text, one line per message, by default; `--json` gives
-structured records for scripts. Diagnostics, warnings and backend fallbacks go
+structured records for scripts. Diagnostics and warnings go
 to stderr (`-v` for INFO logs), so `email … --json | jq` always parses. `send`,
 `reply`, `draft-update` and `draft-delete` are dry runs that print what would be
 sent unless `--yes`.
@@ -148,39 +148,26 @@ store.
 | mailapp | macOS with Mail.app and its accounts            | every account Mail.app has                   | Mac only; `--in body` reads each body (refused past 500 candidates, so bound it with `--since` and a mailbox); on an account with a Gmail token it runs through the Gmail API instead |
 
 `auto` = gmail when `~/.config/email-cli/accounts/<name>/token.json` exists,
-else mailapp on macOS. Mail.app is the fallback, not a peer: under `auto`,
-`mailboxes`/`list`/`search` switch to it (with a warning) when Gmail times out
-after 20 s, is unreachable, answers 429/5xx or has a dead token. `read`,
-`attachments` and `reply` cannot switch (ids are backend-specific), and `send`
-never does, since a timed-out Gmail send may still have been delivered. An
-explicit `--backend` never switches. A Mail.app account syncing from
-`imap.gmail.com` is a Google account: `email accounts` flags it (and `auto`
-warns) while it has no token, so connect it with `email auth login -a <name>`.
-The IMAP hosts are cached in `~/.config/email-cli/mailapp-servers.json`, which
-`email accounts` refreshes.
+else mailapp on macOS. Mail.app is the
+backend of last resort, used only when the account asked for has no other way
+in: driving it launches Mail on the user's screen. A Gmail failure (timeout,
+429/5xx, dead token) is reported as an error, never retried through Mail.app.
+A Mail.app account syncing from `imap.gmail.com` is a Google account: `auto`
+warns while it has no token, so connect it with `email auth login -a <name>`. The IMAP hosts are cached in
+`~/.config/email-cli/mailapp-servers.json`, written by `connect --mailapp`;
+`email accounts` reads the cache and never asks Mail.
 
 **For a Google account, Gmail is the rule, not a preference**: it is about 30x
 faster on searches and sees messages Mail.app has not synced. Do not force
 `--backend mailapp` on a Google account; if one has no token yet, run
-`email auth login -a <name>` once instead. Mail.app is for the accounts Gmail
-cannot serve (iCloud, Outlook, IMAP).
+`email auth login -a <name>` once instead.
 
 **Dead Gmail token in an unattended run.** `stored Gmail grant for <name> is
 dead` means the token was revoked or expired; only `email auth login -a <name>`
 (a browser consent) restores it, so a heartbeat cannot fix it. Report it to the
-user as an action item with that exact command, and keep working through the
-automatic Mail.app fallback:
-
-- `email list <mailbox> --since <date> -a <name>` and `email list sent ...` work
-  as usual.
-- `email search` needs `--mailbox` and a plain substring with
-  `--in subject|from|body`; Gmail syntax (`after:`, `from:`, `newer_than:`...)
-  is refused with an error, since Mail.app would match it literally.
-- Mail.app only sees what it has synced, so an empty result is not proof the
-  mail does not exist. Say so rather than concluding "nothing received".
-
-Do not hand-roll `osa run 'tell application "Mail" ...'` around the CLI, and do
-not pass `--backend mailapp` for this: the fallback already does it.
+user as an action item with that exact command and move on without that
+account. Do not hand-roll `osa run 'tell application "Mail" ...'` around the
+CLI, and do not pass `--backend mailapp` to work around it.
 
 **Sent mail.** `list sent` / `search --mailbox sent` resolve to each account's
 real sent folder, whatever its locale name (`Messages envoyés`, `Sent Mail`,

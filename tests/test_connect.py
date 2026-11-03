@@ -161,7 +161,7 @@ def test_registering_keeps_other_fields(home):
 
 
 def test_accounts_without_config_skips_mail(home, monkeypatch):
-    monkeypatch.setattr(ec, "mailapp_servers", lambda refresh=False: pytest.fail("Mail.app asked"))
+    monkeypatch.setattr(ec, "jxa", lambda *a, **k: pytest.fail("Mail.app asked"))
     assert CliRunner().invoke(ec.cli, ["accounts", "--json"]).output.strip() == "[]"
 
 
